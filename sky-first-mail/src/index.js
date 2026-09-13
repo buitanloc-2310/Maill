@@ -51,6 +51,7 @@ async function ensureSchema(env){
     ['users','avatar_key','TEXT'],['users','allow_name_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_password_change','INTEGER NOT NULL DEFAULT 1'],['users','last_login_at','TEXT'],['users','cover_key','TEXT'],['users','profile_status',"TEXT NOT NULL DEFAULT 'available'"],['users','allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_theme_change','INTEGER NOT NULL DEFAULT 1'],
     ['sessions','ip','TEXT'],['sessions','user_agent','TEXT'],['sessions','last_seen_at','TEXT']
   ]) await ensureColumn(env,table,column,def);
+  if(env.RESEND_API_KEY){try{await env.DB.prepare(`UPDATE managed_domains SET send_enabled=1,status='configured' WHERE lower(domain)=lower('skyfirst.io.vn')`).run()}catch{}}
   schemaReady=true;
 }
 
@@ -83,6 +84,41 @@ async function resolveMailbox(env,address){
   const direct=await env.DB.prepare(`SELECT mb.*,u.id owner_user_id,u.display_name owner_name FROM mailboxes mb JOIN users u ON u.id=mb.user_id WHERE lower(mb.address)=lower(?) AND mb.is_active=1 AND u.status='active' LIMIT 1`).bind(address).first();
   if(direct)return direct;
   try{return await env.DB.prepare(`SELECT mb.*,u.id owner_user_id,u.display_name owner_name FROM aliases a JOIN mailboxes mb ON mb.id=a.mailbox_id JOIN users u ON u.id=mb.user_id WHERE lower(a.address)=lower(?) AND a.is_active=1 AND mb.is_active=1 AND u.status='active' LIMIT 1`).bind(address).first()}catch{return null}
+}
+
+function bytesToBase64(buffer){
+  const bytes=buffer instanceof Uint8Array?buffer:new Uint8Array(buffer);
+  let binary=''; const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
+  return btoa(binary);
+}
+async function sendWithResend(env,{fromAddress,fromName,to,cc,subject,html,text,attachments}){
+  if(!env.RESEND_API_KEY) throw new Error('RESEND_API_KEY chưa được cấu hình trong Worker Secrets.');
+  const files=[];
+  for(const a of attachments||[]){
+    const ab=await a.arrayBuffer();
+    files.push({filename:a.name||'attachment',content:bytesToBase64(ab),content_type:a.type||'application/octet-stream'});
+  }
+  const payload={
+    from: fromName?`${String(fromName).replace(/[<>\r\n]/g,' ').trim()} <${fromAddress}>`:fromAddress,
+    to,
+    subject: subject||'(Không có tiêu đề)',
+    html: html||undefined,
+    text: text||undefined,
+    attachments: files.length?files:undefined
+  };
+  if(cc?.length) payload.cc=cc;
+  const res=await fetch('https://api.resend.com/emails',{
+    method:'POST',
+    headers:{'Authorization':`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  });
+  let data={}; try{data=await res.json()}catch{}
+  if(!res.ok){
+    const msg=data?.message||data?.error||`HTTP ${res.status}`;
+    throw new Error(`Resend: ${msg}`);
+  }
+  return data;
 }
 
 async function routeApi(request,env){
@@ -201,8 +237,16 @@ async function routeApi(request,env){
   if(path==='/api/profile/avatar'&&request.method==='POST'){
     if(!user.allow_avatar_change&&!isAdmin(user))return forbidden('Ảnh đại diện do quản trị viên quản lý.');const form=await request.formData(),file=form.get('avatar');if(!file||typeof file.arrayBuffer!=='function')return badRequest('Thiếu ảnh đại diện.');if(!String(file.type||'').startsWith('image/'))return badRequest('Tệp phải là hình ảnh.');if(file.size>5*1024*1024)return badRequest('Ảnh tối đa 5 MB.');const ext=(file.type.split('/')[1]||'bin').replace(/[^a-z0-9]/gi,'');const key=`avatars/users/${user.id}/${Date.now()}.${ext}`;await env.MAIL_STORAGE.put(key,await file.arrayBuffer(),{httpMetadata:{contentType:file.type}});await env.DB.prepare(`UPDATE users SET avatar_key=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(key,user.id).run();await audit(env,user.id,'profile.avatar.updated','user',user.id,{key});return json({ok:true,key})
   }
+  if(path==='/api/profile/avatar'&&request.method==='DELETE'){
+    if(!user.allow_avatar_change&&!isAdmin(user))return forbidden('Ảnh đại diện do quản trị viên quản lý.');
+    const old=user.avatar_key||null;
+    await env.DB.prepare(`UPDATE users SET avatar_key=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(user.id).run();
+    if(old){try{await env.MAIL_STORAGE.delete(old)}catch{}}
+    await audit(env,user.id,'profile.avatar.deleted','user',user.id);
+    return json({ok:true});
+  }
   const av=path.match(/^\/api\/avatar\/(\d+)$/);
-  if(av&&request.method==='GET'){const t=await env.DB.prepare(`SELECT avatar_key FROM users WHERE id=?`).bind(Number(av[1])).first();if(!t?.avatar_key)return notFound();const o=await env.MAIL_STORAGE.get(t.avatar_key);if(!o)return notFound();const h=new Headers();o.writeHttpMetadata(h);h.set('cache-control','private,max-age=300');return new Response(o.body,{headers:h})}
+  if(av&&request.method==='GET'){const t=await env.DB.prepare(`SELECT avatar_key FROM users WHERE id=?`).bind(Number(av[1])).first();if(!t?.avatar_key)return notFound();const o=await env.MAIL_STORAGE.get(t.avatar_key);if(!o)return notFound();const h=new Headers();o.writeHttpMetadata(h);h.set('cache-control','private,max-age=3600');return new Response(o.body,{headers:h})}
 
   if(path==='/api/preferences'&&request.method==='PATCH'){
     if(user.allow_theme_change===0)return forbidden('Giao diện được quản lý bởi quản trị viên.');const b=await bodyJson(request),theme=['light','dark','system','sky'].includes(b.theme)?b.theme:'system',density=['comfortable','compact'].includes(b.density)?b.density:'comfortable',pane=['right','none'].includes(b.readingPane)?b.readingPane:'right';await env.DB.prepare(`INSERT INTO user_preferences(user_id,theme,density,reading_pane,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(user_id) DO UPDATE SET theme=excluded.theme,density=excluded.density,reading_pane=excluded.reading_pane,updated_at=CURRENT_TIMESTAMP`).bind(user.id,theme,density,pane).run();return json({ok:true})
@@ -234,18 +278,40 @@ async function routeApi(request,env){
     const form=await request.formData();const fromMailboxId=Number(form.get('mailboxId')||0),fromMb=await ownsMailbox(env,user.id,fromMailboxId);if(!fromMb||!fromMb.is_active)return badRequest('Mailbox gửi không hợp lệ.');
     const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),html=cleanEmailHtml(String(form.get('html')||'')),text=String(form.get('text')||'');if(!to.length||to.some(x=>!validEmail(x))||cc.some(x=>!validEmail(x)))return badRequest('Địa chỉ người nhận không hợp lệ.');
     const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function');let total=0;for(const a of attachments){total+=a.size||0}if(total>8*1024*1024)return badRequest('Tổng tệp đính kèm tối đa 8 MB.');
-    const resolved=[];for(const addr of [...to,...cc]){const mb=await resolveMailbox(env,addr);if(!mb)return json({ok:false,error:`Chưa cấu hình gửi ra ngoài cho ${addr}. Hiện Sky First Mail trên gói hiện tại chỉ gửi nội bộ giữa các mailbox trong hệ thống.`},501);resolved.push({addr,mb})}
-    const raw=await buildMime({from:fromMb.address,to,cc,subject,text,html,attachments});const baseKey=`messages/internal/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(baseKey,raw,{httpMetadata:{contentType:'message/rfc822'}});
+
+    const internalTo=[],externalTo=[],internalCc=[],externalCc=[];
+    for(const addr of to){const mb=await resolveMailbox(env,addr);(mb?internalTo:externalTo).push({addr,mb})}
+    for(const addr of cc){const mb=await resolveMailbox(env,addr);(mb?internalCc:externalCc).push({addr,mb})}
+
+    let resendId=null;
+    if(externalTo.length||externalCc.length){
+      try{
+        const r=await sendWithResend(env,{fromAddress:fromMb.address,fromName:user.display_name||fromMb.display_name,to:externalTo.map(x=>x.addr),cc:externalCc.map(x=>x.addr),subject,html,text,attachments});
+        resendId=r?.id||null;
+      }catch(e){
+        console.error('OUTBOUND_SEND_FAILED',{from:fromMb.address,to:externalTo.map(x=>x.addr),cc:externalCc.map(x=>x.addr),message:e?.message||String(e)});
+        return json({ok:false,error:`Không gửi được email ra ngoài. ${e?.message||e}`},502);
+      }
+    }
+
+    const raw=await buildMime({from:fromMb.address,to,cc,subject,text,html,attachments});const baseKey=`messages/outbound/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(baseKey,raw,{httpMetadata:{contentType:'message/rfc822'},customMetadata:{provider:resendId?'resend':'internal',resendId:resendId||''}});
     const now=new Date().toISOString();const recipientJson=JSON.stringify(to);
-    const sent=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at) VALUES(?,'outbound','sent',?,?,?,?,?,?,?,1,'sent',?,?)`).bind(fromMb.id,fromMb.address,recipientJson,JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now).run();
-    for(const {addr,mb} of resolved){await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at) VALUES(?,'inbound','inbox',?,?,?,?,?,?,?,0,'received',?,?)`).bind(mb.id,fromMb.address,JSON.stringify([addr]),JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now).run();await notify(env,mb.user_id,`Thư mới từ ${user.display_name||fromMb.address}`,subject||'(Không có tiêu đề)','mail')}
-    await audit(env,user.id,'mail.internal.sent','message',sent.meta.last_row_id,{to,cc});return json({ok:true,internal:true,messageId:sent.meta.last_row_id})
+    const sent=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header) VALUES(?,'outbound','sent',?,?,?,?,?,?,?,1,'sent',?,?,?)`).bind(fromMb.id,fromMb.address,recipientJson,JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now,resendId).run();
+    for(const {addr,mb} of [...internalTo,...internalCc]){await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at) VALUES(?,'inbound','inbox',?,?,?,?,?,?,?,0,'received',?,?)`).bind(mb.id,fromMb.address,JSON.stringify([addr]),JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now).run();await notify(env,mb.user_id,`Thư mới từ ${user.display_name||fromMb.address}`,subject||'(Không có tiêu đề)','mail')}
+    await audit(env,user.id,resendId?'mail.external.sent':'mail.internal.sent','message',sent.meta.last_row_id,{to,cc,resendId});return json({ok:true,internal:!resendId,external:!!resendId,resendId,messageId:sent.meta.last_row_id})
   }
 
   if(path.startsWith('/api/admin/')){
     if(!isAdmin(user))return forbidden();
     if(path==='/api/admin/dashboard'&&request.method==='GET'){
       const [u,m,mb,unread]=await env.DB.batch([env.DB.prepare(`SELECT count(*) n FROM users`),env.DB.prepare(`SELECT count(*) n,COALESCE(sum(raw_size),0) bytes FROM messages`),env.DB.prepare(`SELECT count(*) n FROM mailboxes WHERE is_active=1`),env.DB.prepare(`SELECT count(*) n FROM messages WHERE is_read=0 AND folder='inbox'`)]);return json({ok:true,stats:{users:u.results?.[0]?.n||0,messages:m.results?.[0]?.n||0,bytes:m.results?.[0]?.bytes||0,activeMailboxes:mb.results?.[0]?.n||0,unread:unread.results?.[0]?.n||0}})
+    }
+    if(path==='/api/admin/system'&&request.method==='GET'){
+      let pageCount=null,pageSize=null;
+      try{pageCount=(await env.DB.prepare('PRAGMA page_count').first())?.page_count??null;pageSize=(await env.DB.prepare('PRAGMA page_size').first())?.page_size??null}catch{}
+      const m=await env.DB.prepare(`SELECT count(*) message_count,COALESCE(sum(raw_size),0) message_bytes FROM messages`).first();
+      const u=await env.DB.prepare(`SELECT count(*) user_count FROM users`).first();
+      return json({ok:true,architecture:{metadata:'D1 metadata only',objects:'R2 object storage',compute:'Cloudflare Workers',outbound:'Resend API'},storage:{messageBytes:Number(m?.message_bytes||0),messageCount:Number(m?.message_count||0),d1ApproxBytes:pageCount&&pageSize?Number(pageCount)*Number(pageSize):null},accounts:{users:Number(u?.user_count||0)},capabilities:{outbound:!!env.RESEND_API_KEY,inbound:true,r2:true,avatarStorage:'R2',rawMailStorage:'R2'},scale:{r2Target:'100GB+',millionAccounts:'requires sharded/external metadata database'}})
     }
     if(path==='/api/admin/users'&&request.method==='GET'){const r=await env.DB.prepare(`SELECT u.id,u.email,u.display_name,u.role,u.status,u.avatar_key,u.allow_name_change,u.allow_avatar_change,u.allow_password_change,u.allow_signature_change,u.allow_theme_change,u.last_login_at,(SELECT count(*) FROM mailboxes mb WHERE mb.user_id=u.id) mailbox_count,(SELECT id FROM mailboxes mb2 WHERE mb2.user_id=u.id ORDER BY is_primary DESC,id LIMIT 1) primary_mailbox_id FROM users u ORDER BY u.created_at DESC`).all();return json({ok:true,users:r.results||[]})}
     if(path==='/api/admin/users'&&request.method==='POST'){
