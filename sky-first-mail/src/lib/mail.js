@@ -1,0 +1,52 @@
+import PostalMime from 'postal-mime';
+
+export async function parseStoredMessage(env, storageKey) {
+  const obj = await env.MAIL_STORAGE.get(storageKey);
+  if (!obj) return null;
+  const raw = await obj.arrayBuffer();
+  return await new PostalMime().parse(raw);
+}
+
+export function cleanEmailHtml(html='') {
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi,'')
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi,'')
+    .replace(/<object[\s\S]*?<\/object>/gi,'')
+    .replace(/<embed[^>]*>/gi,'')
+    .replace(/<form[\s\S]*?<\/form>/gi,'')
+    .replace(/\son\w+\s*=\s*(['"]).*?\1/gi,'')
+    .replace(/javascript:/gi,'');
+}
+
+function encHeader(s='') { return String(s).replace(/[\r\n]+/g,' ').trim(); }
+function toBase64(bytes) {
+  const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let out=''; const step=0x8000;
+  for(let i=0;i<arr.length;i+=step) out += String.fromCharCode(...arr.subarray(i,i+step));
+  return btoa(out);
+}
+
+export async function buildMime({from,to,cc=[],subject='',text='',html='',attachments=[]}) {
+  const boundary=`sfm_${crypto.randomUUID().replaceAll('-','')}`;
+  const lines=[
+    `From: ${encHeader(from)}`,
+    `To: ${to.map(encHeader).join(', ')}`,
+    ...(cc.length?[`Cc: ${cc.map(encHeader).join(', ')}`]:[]),
+    `Subject: ${encHeader(subject || '(Không có tiêu đề)')}`,
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${crypto.randomUUID()}@sky-first-mail.local>`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`, '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit','',
+    cleanEmailHtml(html || `<div>${String(text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div>`),'',
+  ];
+  for (const a of attachments) {
+    const ab=await a.arrayBuffer();
+    const b64=toBase64(ab).replace(/(.{76})/g,'$1\r\n');
+    lines.push(`--${boundary}`,`Content-Type: ${a.type||'application/octet-stream'}; name="${encHeader(a.name||'attachment')}"`,`Content-Disposition: attachment; filename="${encHeader(a.name||'attachment')}"`,'Content-Transfer-Encoding: base64','',b64,'');
+  }
+  lines.push(`--${boundary}--`,'');
+  return new TextEncoder().encode(lines.join('\r\n')).buffer;
+}
