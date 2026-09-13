@@ -36,12 +36,14 @@ async function ensureSchema(env){
     CREATE TABLE IF NOT EXISTS message_labels (message_id INTEGER NOT NULL,label_id INTEGER NOT NULL,PRIMARY KEY(message_id,label_id),FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,FOREIGN KEY(label_id) REFERENCES labels(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS mail_rules (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER,name TEXT NOT NULL,sender_contains TEXT,subject_contains TEXT,action_folder TEXT,action_star INTEGER NOT NULL DEFAULT 0,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,type TEXT NOT NULL DEFAULT 'system',title TEXT NOT NULL,body TEXT,is_read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS compose_drafts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER NOT NULL,to_json TEXT NOT NULL DEFAULT '[]',cc_json TEXT NOT NULL DEFAULT '[]',subject TEXT,body_text TEXT,storage_key TEXT,attachment_names_json TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS managed_domains (id INTEGER PRIMARY KEY AUTOINCREMENT,domain TEXT NOT NULL UNIQUE COLLATE NOCASE,status TEXT NOT NULL DEFAULT 'configured',receive_enabled INTEGER NOT NULL DEFAULT 1,send_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
     CREATE INDEX IF NOT EXISTS idx_messages_mailbox_folder ON messages(mailbox_id,folder,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id_header);
     CREATE INDEX IF NOT EXISTS idx_login_history_user_created ON login_history(user_id,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id,display_name);
     CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,is_read,created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_compose_drafts_user ON compose_drafts(user_id,updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_rules_user ON mail_rules(user_id,is_active);
     CREATE INDEX IF NOT EXISTS idx_labels_user ON labels(user_id,name);
     INSERT OR IGNORE INTO settings(key,value_json) VALUES ('setup_completed','false'),('mail_domain','"skyfirst.io.vn"'),('app_name','"Sky First Mail"');
@@ -314,8 +316,75 @@ async function routeApi(request,env){
     const raw=await buildMime({from:fromMb.address,to,cc,subject,text,html,attachments});const baseKey=`messages/outbound/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(baseKey,raw,{httpMetadata:{contentType:'message/rfc822'},customMetadata:{provider:resendId?'resend':'internal',resendId:resendId||''}});
     const now=new Date().toISOString();const recipientJson=JSON.stringify(to);
     const sent=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header) VALUES(?,'outbound','sent',?,?,?,?,?,?,?,1,'sent',?,?,?)`).bind(fromMb.id,fromMb.address,recipientJson,JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now,resendId).run();
-    for(const {addr,mb} of [...internalTo,...internalCc]){await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at) VALUES(?,'inbound','inbox',?,?,?,?,?,?,?,0,'received',?,?)`).bind(mb.id,fromMb.address,JSON.stringify([addr]),JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now).run();await notify(env,mb.user_id,`Thư mới từ ${user.display_name||fromMb.address}`,subject||'(Không có tiêu đề)','mail')}
+    const delivered=new Set();for(const {addr,mb} of [...internalTo,...internalCc]){if(delivered.has(mb.id))continue;delivered.add(mb.id);await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at) VALUES(?,'inbound','inbox',?,?,?,?,?,?,?,0,'received',?,?)`).bind(mb.id,fromMb.address,JSON.stringify([addr]),JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now).run();await notify(env,mb.user_id,`Thư mới từ ${user.display_name||fromMb.address}`,subject||'(Không có tiêu đề)','mail')}
     await audit(env,user.id,resendId?'mail.external.sent':'mail.internal.sent','message',sent.meta.last_row_id,{to,cc,resendId});return json({ok:true,internal:!resendId,external:!!resendId,resendId,messageId:sent.meta.last_row_id})
+  }
+
+
+  // V4 reliability + productivity endpoints
+  if(path==='/api/health'&&request.method==='GET'){
+    return json({ok:true,service:'Sky First Mail',version:'4.0',time:new Date().toISOString(),outbound:!!env.RESEND_API_KEY,storage:!!env.MAIL_STORAGE});
+  }
+  if(path==='/api/mailbox/usage'&&request.method==='GET'){
+    const r=await env.DB.prepare(`SELECT count(*) message_count,COALESCE(sum(m.raw_size),0) message_bytes FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=?`).bind(user.id).first();
+    return json({ok:true,messageCount:Number(r?.message_count||0),messageBytes:Number(r?.message_bytes||0)});
+  }
+  if(path==='/api/messages/mark-all-read'&&request.method==='POST'){
+    const b=await bodyJson(request),folder=FOLDERS.includes(b.folder)?b.folder:'inbox';
+    await env.DB.prepare(`UPDATE messages SET is_read=1 WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND folder=?`).bind(user.id,folder).run();
+    return json({ok:true});
+  }
+  if(path==='/api/sessions/others'&&request.method==='DELETE'){
+    await env.DB.prepare(`DELETE FROM sessions WHERE user_id=? AND id<>?`).bind(user.id,user.session_id).run();
+    await audit(env,user.id,'security.sessions.revoked','user',user.id,{except:user.session_id});
+    return json({ok:true});
+  }
+  const cm=path.match(/^\/api\/contacts\/(\d+)$/);
+  if(cm&&request.method==='DELETE'){
+    await env.DB.prepare(`DELETE FROM contacts WHERE id=? AND owner_user_id=?`).bind(Number(cm[1]),user.id).run();
+    return json({ok:true});
+  }
+  const sigm=path.match(/^\/api\/signatures\/(\d+)$/);
+  if(sigm&&request.method==='DELETE'){
+    if(user.allow_signature_change===0)return forbidden('Chữ ký do quản trị viên quản lý.');
+    await env.DB.prepare(`DELETE FROM signatures WHERE id=? AND user_id=?`).bind(Number(sigm[1]),user.id).run();
+    return json({ok:true});
+  }
+  const rulem=path.match(/^\/api\/rules\/(\d+)$/);
+  if(rulem&&request.method==='DELETE'){
+    await env.DB.prepare(`DELETE FROM mail_rules WHERE id=? AND user_id=?`).bind(Number(rulem[1]),user.id).run();
+    return json({ok:true});
+  }
+  if(rulem&&request.method==='PATCH'){
+    const b=await bodyJson(request);if(!('isActive' in b))return badRequest('Không có thay đổi.');
+    await env.DB.prepare(`UPDATE mail_rules SET is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`).bind(boolInt(b.isActive),Number(rulem[1]),user.id).run();
+    return json({ok:true});
+  }
+  if(path==='/api/drafts'&&request.method==='GET'){
+    const r=await env.DB.prepare(`SELECT id,mailbox_id,to_json,cc_json,subject,body_text,attachment_names_json,created_at,updated_at FROM compose_drafts WHERE user_id=? ORDER BY updated_at DESC LIMIT 100`).bind(user.id).all();
+    return json({ok:true,drafts:r.results||[]});
+  }
+  if(path==='/api/drafts'&&request.method==='POST'){
+    const form=await request.formData();const id=Number(form.get('draftId')||0),mailboxId=Number(form.get('mailboxId')||0),mb=await ownsMailbox(env,user.id,mailboxId);if(!mb)return badRequest('Mailbox không hợp lệ.');
+    const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),text=String(form.get('text')||'').slice(0,200000);
+    const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function');let total=0;for(const a of attachments)total+=a.size||0;if(total>8*1024*1024)return badRequest('Tổng tệp đính kèm tối đa 8 MB.');
+    let storageKey=null,names=attachments.map(a=>String(a.name||'attachment').slice(0,180));
+    if(attachments.length){const raw=await buildMime({from:mb.address,to:to.length?to:[mb.address],cc,subject,text,attachments});storageKey=`drafts/${user.id}/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(storageKey,raw,{httpMetadata:{contentType:'message/rfc822'}})}
+    if(id){const old=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(id,user.id).first();if(!old)return notFound('Không tìm thấy bản nháp.');await env.DB.prepare(`UPDATE compose_drafts SET mailbox_id=?,to_json=?,cc_json=?,subject=?,body_text=?,storage_key=COALESCE(?,storage_key),attachment_names_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`).bind(mailboxId,JSON.stringify(to),JSON.stringify(cc),subject,text,storageKey,JSON.stringify(names),id,user.id).run();if(storageKey&&old.storage_key&&old.storage_key!==storageKey){try{await env.MAIL_STORAGE.delete(old.storage_key)}catch{}}return json({ok:true,id})}
+    const r=await env.DB.prepare(`INSERT INTO compose_drafts(user_id,mailbox_id,to_json,cc_json,subject,body_text,storage_key,attachment_names_json) VALUES(?,?,?,?,?,?,?,?)`).bind(user.id,mailboxId,JSON.stringify(to),JSON.stringify(cc),subject,text,storageKey,JSON.stringify(names)).run();return json({ok:true,id:r.meta.last_row_id});
+  }
+  const dm=path.match(/^\/api\/drafts\/(\d+)$/);
+  if(dm&&request.method==='GET'){
+    const d=await env.DB.prepare(`SELECT * FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(dm[1]),user.id).first();if(!d)return notFound('Không tìm thấy bản nháp.');return json({ok:true,draft:d});
+  }
+  if(dm&&request.method==='DELETE'){
+    const d=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(dm[1]),user.id).first();await env.DB.prepare(`DELETE FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(dm[1]),user.id).run();if(d?.storage_key){try{await env.MAIL_STORAGE.delete(d.storage_key)}catch{}}return json({ok:true});
+  }
+  if(mm&&request.method==='DELETE'){
+    const id=Number(mm[1]),row=await ownsMessage(env,user.id,id);if(!row)return notFound();if(row.folder!=='trash')return badRequest('Chỉ có thể xóa vĩnh viễn thư đang ở Thùng rác.');
+    await env.DB.prepare(`DELETE FROM messages WHERE id=?`).bind(id).run();
+    const refs=await env.DB.prepare(`SELECT count(*) n FROM messages WHERE storage_key=?`).bind(row.storage_key).first();if(Number(refs?.n||0)===0){try{await env.MAIL_STORAGE.delete(row.storage_key)}catch{}}
+    await audit(env,user.id,'mail.deleted.permanently','message',id);return json({ok:true});
   }
 
   if(path.startsWith('/api/admin/')){
@@ -364,6 +433,7 @@ async function handleInboundEmail(message, env, ctx) {
     if (!mailbox) { message.setReject('Mailbox does not exist.'); return; }
     const subject = message.headers.get('subject') || '(Không có tiêu đề)';
     const messageId = message.headers.get('message-id') || null;
+    if(messageId){const dup=await env.DB.prepare(`SELECT id FROM messages WHERE mailbox_id=? AND message_id_header=? LIMIT 1`).bind(mailbox.id,messageId).first();if(dup){console.log('MAIL_DUPLICATE_SKIPPED',{mailboxId:mailbox.id,messageId});return;}}
     const sentAt = message.headers.get('date') || null;
     let folder='inbox', starred=0;
     try {
