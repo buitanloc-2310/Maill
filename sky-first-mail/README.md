@@ -1,33 +1,33 @@
-# Sky First Mail — One Worker
+# Sky First Mail v3 — One Worker Webmail
 
-Bản này dùng **một Worker duy nhất** cho cả website và Email Routing.
+Sky First Mail v3 là bản nâng cấp theo hướng **webmail thực thụ**, vẫn giữ mô hình **một Cloudflare Worker** cho cả website/API và Email Routing.
 
-- Worker name: `sky-first-mail-inbound`
+## Deploy hiện tại
+- Worker: `sky-first-mail-inbound`
 - Custom domain: `gmail.skyfirst.io.vn`
-- Email Routing catch-all: `sky-first-mail-inbound`
-- D1 binding: `DB`
-- R2 binding: `MAIL_STORAGE`
-- GitHub root directory: `sky-first-mail`
+- Root directory trên Cloudflare/GitHub: `sky-first-mail`
 - Deploy command: `npx wrangler deploy`
+- D1 binding: `DB` -> `sky-first-mail`
+- R2 binding: `MAIL_STORAGE` -> `sky-first-mail-storage`
+- Secret gửi ngoài: `RESEND_API_KEY`
 
-Worker có cả `fetch()` (web/API) và `email()` (nhận mail), vì vậy không cần tạo Worker web thứ hai.
+## Luồng mail
+- Nhận: Internet -> Cloudflare Email Routing -> `email()` -> R2 raw MIME + D1 metadata
+- Gửi ngoài: Sky First Mail -> Resend API -> Gmail/Outlook/Internet
+- Gửi nội bộ: Worker -> R2 + D1 -> mailbox nội bộ
 
-## Gửi email ra ngoài bằng Resend
+## Nâng cấp v3
+- Giao diện 3-pane webmail hoàn chỉnh hơn, responsive desktop/mobile.
+- Bulk select thư + đánh dấu đã đọc, star, spam, trash.
+- Bộ đếm thư từng folder và badge chưa đọc.
+- Command palette `Ctrl + K`; phím `/` tìm kiếm; `C` mở compose.
+- Compose được làm lại trực quan hơn, hỗ trợ file đính kèm và outbound Resend.
+- Reader có thanh hành động, in thư và trạng thái nhận qua Sky First Mail.
+- Avatar/profile dùng R2; tài khoản, session, chữ ký, rule, contacts, notification, alias và Admin Center vẫn giữ nguyên.
+- Login/footer và toàn bộ visual được polish theo hệ nhận diện Sky First, không sao chép thương hiệu Gmail.
 
-Worker hỗ trợ gửi email Internet qua Resend. Thêm Worker Secret `RESEND_API_KEY` vào Cloudflare. Domain gửi phải được Verified trên Resend. Không lưu API key trong GitHub hoặc `wrangler.jsonc`.
+## Kiến trúc scale
+Dữ liệu nặng (raw email, attachment, avatar) nằm ở **R2**. D1 giữ metadata/index để giảm phụ thuộc vào dung lượng DB. Với quy mô rất lớn, lớp metadata phải được chuyển sang sharding hoặc database ngoài (ví dụ PostgreSQL/Hyperdrive); không nên coi một D1 đơn lẻ là kiến trúc cho hàng triệu tài khoản. Xem `docs/SCALING.md`.
 
-Luồng:
-- Nhận thư: Cloudflare Email Routing -> Worker -> D1/R2
-- Gửi thư ngoài hệ thống: Sky First Mail -> Resend API -> Gmail/Outlook/...
-- Gửi nội bộ: xử lý trực tiếp trong D1/R2
-
-## v2 architecture note
-
-This build intentionally stores **large mail data in R2** and keeps **D1 as metadata/index only**. See `docs/SCALING.md` for the path toward 100 GB+ storage and large account counts. A single D1 database should not be treated as a one-million-account architecture.
-
-### New v2 improvements
-- Rebuilt profile/avatar experience with preview, upload, deletion and R2-backed cache busting.
-- Interactive login/footer information panels.
-- Expanded Admin Center with System/Storage architecture view.
-- Resend outbound + Cloudflare Email Routing inbound remain in the same Worker.
-- More polished responsive Sky First visual system.
+## Lưu ý
+Không xóa D1/R2 hiện tại khi nâng cấp. `ensureSchema()` tự bổ sung schema cần thiết. Không commit `RESEND_API_KEY` vào repository.

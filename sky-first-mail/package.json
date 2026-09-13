@@ -8,7 +8,7 @@
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply DB --remote",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
-    "validate": "node --check src/index.js && node --check src/lib/auth.js && node --check src/lib/http.js && node --check src/lib/mail.js && node --check src/lib/security.js && node --check public/app.js"
+    "validate": "node --check src/index.js && node --check src/lib/auth.js && node --check src/lib/http.js && node --check src/lib/mail.js && node --check src/lib/security.js && node --check public/app.js && node --check public/v3.js"
   },
   "dependencies": {
     "postal-mime": "^2.4.3"

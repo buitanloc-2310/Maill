@@ -198,6 +198,23 @@ async function routeApi(request,env){
     const r=await env.DB.prepare(`SELECT id,address,display_name,is_primary,is_active FROM mailboxes WHERE user_id=? ORDER BY is_primary DESC,id`).bind(user.id).all();return json({ok:true,mailboxes:r.results||[]})
   }
 
+  if(path==='/api/mailbox/summary'&&request.method==='GET'){
+    const rows=await env.DB.prepare(`SELECT m.folder,m.is_starred,m.is_read,count(*) n FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? GROUP BY m.folder,m.is_starred,m.is_read`).bind(user.id).all();
+    const counts={inbox:0,sent:0,drafts:0,spam:0,trash:0,starred:0};let unread=0;
+    for(const r of rows.results||[]){if(r.folder in counts)counts[r.folder]+=Number(r.n||0);if(r.is_starred&&r.folder!=='trash')counts.starred+=Number(r.n||0);if(r.folder==='inbox'&&!r.is_read)unread+=Number(r.n||0)}
+    return json({ok:true,counts,unread});
+  }
+  if(path==='/api/messages/bulk'&&request.method==='POST'){
+    const b=await bodyJson(request),ids=[...new Set((Array.isArray(b.ids)?b.ids:[]).map(Number).filter(Number.isInteger))].slice(0,200),action=String(b.action||'');
+    if(!ids.length)return badRequest('Chưa chọn thư.');if(!['read','unread','star','unstar','spam','trash','inbox'].includes(action))return badRequest('Thao tác không hợp lệ.');
+    const qs=ids.map(()=>'?').join(',');const owned=await env.DB.prepare(`SELECT m.id FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? AND m.id IN (${qs})`).bind(user.id,...ids).all();
+    const ok=(owned.results||[]).map(x=>Number(x.id));if(!ok.length)return badRequest('Không có thư hợp lệ.');const q2=ok.map(()=>'?').join(',');
+    if(action==='read'||action==='unread')await env.DB.prepare(`UPDATE messages SET is_read=? WHERE id IN (${q2})`).bind(action==='read'?1:0,...ok).run();
+    else if(action==='star'||action==='unstar')await env.DB.prepare(`UPDATE messages SET is_starred=? WHERE id IN (${q2})`).bind(action==='star'?1:0,...ok).run();
+    else await env.DB.prepare(`UPDATE messages SET folder=? WHERE id IN (${q2})`).bind(action,...ok).run();
+    await audit(env,user.id,'mail.bulk.updated','message',null,{ids:ok,action});return json({ok:true,updated:ok.length});
+  }
+
   if(path==='/api/messages'&&request.method==='GET'){
     const folder=String(url.searchParams.get('folder')||'inbox'), mailboxId=Number(url.searchParams.get('mailboxId')||0), q=String(url.searchParams.get('q')||'').trim(), limit=Math.min(100,Math.max(1,Number(url.searchParams.get('limit')||50)));
     let where=`mb.user_id=?`, binds=[user.id];
