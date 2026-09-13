@@ -1,0 +1,20 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "sky-first-mail-inbound",
+  "main": "index.js",
+  "compatibility_date": "2026-09-01",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sky-first-mail",
+      "database_id": "eda8015d-b594-4bab-a740-50554a6d5f74"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MAIL_STORAGE",
+      "bucket_name": "sky-first-mail-storage"
+    }
+  ],
+  "observability": { "enabled": true }
+}
