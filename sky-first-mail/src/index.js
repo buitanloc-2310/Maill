@@ -38,6 +38,8 @@ async function ensureSchema(env){
     CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,type TEXT NOT NULL DEFAULT 'system',title TEXT NOT NULL,body TEXT,is_read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS compose_drafts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER NOT NULL,to_json TEXT NOT NULL DEFAULT '[]',cc_json TEXT NOT NULL DEFAULT '[]',subject TEXT,body_text TEXT,storage_key TEXT,attachment_names_json TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS managed_domains (id INTEGER PRIMARY KEY AUTOINCREMENT,domain TEXT NOT NULL UNIQUE COLLATE NOCASE,status TEXT NOT NULL DEFAULT 'configured',receive_enabled INTEGER NOT NULL DEFAULT 1,send_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS mail_templates (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,subject TEXT NOT NULL DEFAULT '',body_html TEXT NOT NULL DEFAULT '',body_text TEXT NOT NULL DEFAULT '',category TEXT NOT NULL DEFAULT 'personal',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS delivery_events (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER,provider TEXT NOT NULL DEFAULT 'resend',provider_message_id TEXT,event_type TEXT NOT NULL,detail_json TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE);
     CREATE INDEX IF NOT EXISTS idx_messages_mailbox_folder ON messages(mailbox_id,folder,created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id_header);
     CREATE INDEX IF NOT EXISTS idx_login_history_user_created ON login_history(user_id,created_at DESC);
@@ -46,12 +48,15 @@ async function ensureSchema(env){
     CREATE INDEX IF NOT EXISTS idx_compose_drafts_user ON compose_drafts(user_id,updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_rules_user ON mail_rules(user_id,is_active);
     CREATE INDEX IF NOT EXISTS idx_labels_user ON labels(user_id,name);
+    CREATE INDEX IF NOT EXISTS idx_mail_templates_user ON mail_templates(user_id,updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_delivery_events_message ON delivery_events(message_id,created_at DESC);
     INSERT OR IGNORE INTO settings(key,value_json) VALUES ('setup_completed','false'),('mail_domain','"skyfirst.io.vn"'),('app_name','"Sky First Mail"');
     INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('skyfirst.io.vn','configured',1,0);
   `);
   for(const [table,column,def] of [
     ['users','avatar_key','TEXT'],['users','allow_name_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_password_change','INTEGER NOT NULL DEFAULT 1'],['users','last_login_at','TEXT'],['users','cover_key','TEXT'],['users','profile_status',"TEXT NOT NULL DEFAULT 'available'"],['users','allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_theme_change','INTEGER NOT NULL DEFAULT 1'],
-    ['sessions','ip','TEXT'],['sessions','user_agent','TEXT'],['sessions','last_seen_at','TEXT']
+    ['sessions','ip','TEXT'],['sessions','user_agent','TEXT'],['sessions','last_seen_at','TEXT'],
+    ['messages','bcc_json','TEXT'],['compose_drafts','bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['compose_drafts','body_html','TEXT'],['compose_drafts','sender_address','TEXT'],['compose_drafts','reply_to_message_id','INTEGER']
   ]) await ensureColumn(env,table,column,def);
   if(env.RESEND_API_KEY){try{await env.DB.prepare(`UPDATE managed_domains SET send_enabled=1,status='configured' WHERE lower(domain)=lower('skyfirst.io.vn')`).run()}catch{}}
   schemaReady=true;
@@ -82,6 +87,13 @@ async function markSetup(env){
 }
 async function ownsMessage(env,userId,id){return env.DB.prepare(`SELECT m.* FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE m.id=? AND mb.user_id=? LIMIT 1`).bind(id,userId).first()}
 async function ownsMailbox(env,userId,id){return env.DB.prepare(`SELECT * FROM mailboxes WHERE id=? AND user_id=? LIMIT 1`).bind(id,userId).first()}
+async function resolveSenderIdentity(env,userId,mailboxId,address=''){
+  const mb=await ownsMailbox(env,userId,mailboxId);if(!mb||!mb.is_active)return null;
+  const wanted=normalizeEmail(address||mb.address);
+  if(wanted===normalizeEmail(mb.address))return {...mb,sender_address:mb.address,sender_kind:'mailbox'};
+  const a=await env.DB.prepare(`SELECT a.address FROM aliases a JOIN mailboxes mb ON mb.id=a.mailbox_id WHERE a.mailbox_id=? AND mb.user_id=? AND a.is_active=1 AND lower(a.address)=lower(?) LIMIT 1`).bind(mb.id,userId,wanted).first();
+  return a?{...mb,sender_address:a.address,sender_kind:'alias'}:null;
+}
 async function resolveMailbox(env,address){
   const direct=await env.DB.prepare(`SELECT mb.*,u.id owner_user_id,u.display_name owner_name FROM mailboxes mb JOIN users u ON u.id=mb.user_id WHERE lower(mb.address)=lower(?) AND mb.is_active=1 AND u.status='active' LIMIT 1`).bind(address).first();
   if(direct)return direct;
@@ -94,7 +106,7 @@ function bytesToBase64(buffer){
   for(let i=0;i<bytes.length;i+=chunk) binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
   return btoa(binary);
 }
-async function sendWithResend(env,{fromAddress,fromName,to,cc,subject,html,text,attachments}){
+async function sendWithResend(env,{fromAddress,fromName,to,cc,bcc,subject,html,text,attachments,headers,replyTo}){
   if(!env.RESEND_API_KEY) throw new Error('RESEND_API_KEY chưa được cấu hình trong Worker Secrets.');
   const files=[];
   for(const a of attachments||[]){
@@ -107,9 +119,12 @@ async function sendWithResend(env,{fromAddress,fromName,to,cc,subject,html,text,
     subject: subject||'(Không có tiêu đề)',
     html: html||undefined,
     text: text||undefined,
-    attachments: files.length?files:undefined
+    attachments: files.length?files:undefined,
+    headers: headers&&Object.keys(headers).length?headers:undefined
   };
   if(cc?.length) payload.cc=cc;
+  if(bcc?.length) payload.bcc=bcc;
+  if(replyTo) payload.reply_to=replyTo;
   const res=await fetch('https://api.resend.com/emails',{
     method:'POST',
     headers:{'Authorization':`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
@@ -283,6 +298,19 @@ async function routeApi(request,env){
   if(path==='/api/sessions'&&request.method==='GET'){let r;try{r=await env.DB.prepare(`SELECT id,ip,user_agent,created_at,last_seen_at,expires_at FROM sessions WHERE user_id=? ORDER BY COALESCE(last_seen_at,created_at) DESC`).bind(user.id).all()}catch{r=await env.DB.prepare(`SELECT id,created_at,expires_at FROM sessions WHERE user_id=? ORDER BY created_at DESC`).bind(user.id).all()}return json({ok:true,sessions:r.results||[],currentSessionId:user.session_id})}
   const sm=path.match(/^\/api\/sessions\/(\d+)$/);if(sm&&request.method==='DELETE'){const id=Number(sm[1]);if(id===Number(user.session_id))return badRequest('Không thể thu hồi phiên đang dùng. Hãy đăng xuất thay thế.');await env.DB.prepare(`DELETE FROM sessions WHERE id=? AND user_id=?`).bind(id,user.id).run();return json({ok:true})}
 
+  if(path==='/api/sender-identities'&&request.method==='GET'){
+    const mb=await env.DB.prepare(`SELECT id,address,display_name,is_primary,is_active FROM mailboxes WHERE user_id=? AND is_active=1 ORDER BY is_primary DESC,id`).bind(user.id).all();
+    const al=await env.DB.prepare(`SELECT a.id,a.mailbox_id,a.address,mb.display_name FROM aliases a JOIN mailboxes mb ON mb.id=a.mailbox_id WHERE mb.user_id=? AND a.is_active=1 AND mb.is_active=1 ORDER BY a.address`).bind(user.id).all();
+    return json({ok:true,mailboxes:mb.results||[],aliases:al.results||[]});
+  }
+  if(path==='/api/templates'&&request.method==='GET'){
+    const r=await env.DB.prepare(`SELECT id,name,subject,body_html,body_text,category,created_at,updated_at FROM mail_templates WHERE user_id=? ORDER BY updated_at DESC LIMIT 200`).bind(user.id).all();return json({ok:true,templates:r.results||[]});
+  }
+  if(path==='/api/templates'&&request.method==='POST'){
+    const b=await bodyJson(request),name=String(b.name||'').trim().slice(0,100),subject=String(b.subject||'').slice(0,998),html=cleanEmailHtml(String(b.bodyHtml||'')).slice(0,250000),text=String(b.bodyText||'').slice(0,250000),category=String(b.category||'personal').trim().slice(0,40)||'personal';if(!name)return badRequest('Thiếu tên mẫu email.');const r=await env.DB.prepare(`INSERT INTO mail_templates(user_id,name,subject,body_html,body_text,category) VALUES(?,?,?,?,?,?)`).bind(user.id,name,subject,html,text,category).run();await audit(env,user.id,'template.created','template',r.meta.last_row_id,{name});return json({ok:true,id:r.meta.last_row_id});
+  }
+  const tm=path.match(/^\/api\/templates\/(\d+)$/);if(tm&&request.method==='DELETE'){const id=Number(tm[1]);await env.DB.prepare(`DELETE FROM mail_templates WHERE id=? AND user_id=?`).bind(id,user.id).run();await audit(env,user.id,'template.deleted','template',id);return json({ok:true})}
+
   if(path==='/api/signatures'&&request.method==='GET'){const r=await env.DB.prepare(`SELECT * FROM signatures WHERE user_id=? ORDER BY is_default DESC,id`).bind(user.id).all();return json({ok:true,signatures:r.results||[]})}
   if(path==='/api/signatures'&&request.method==='POST'){if(user.allow_signature_change===0)return forbidden('Chữ ký do quản trị viên quản lý.');const b=await bodyJson(request),name=String(b.name||'Chữ ký').trim().slice(0,80),html=cleanEmailHtml(String(b.contentHtml||'')).slice(0,20000),mailboxId=b.mailboxId?Number(b.mailboxId):null;if(mailboxId&&!await ownsMailbox(env,user.id,mailboxId))return forbidden();if(b.isDefault)await env.DB.prepare(`UPDATE signatures SET is_default=0 WHERE user_id=?`).bind(user.id).run();const r=await env.DB.prepare(`INSERT INTO signatures(user_id,mailbox_id,name,content_html,is_default) VALUES(?,?,?,?,?)`).bind(user.id,mailboxId,name,html,boolInt(b.isDefault)).run();return json({ok:true,id:r.meta.last_row_id})}
 
@@ -294,36 +322,23 @@ async function routeApi(request,env){
   if(path==='/api/rules'&&request.method==='POST'){const b=await bodyJson(request),name=String(b.name||'Quy tắc').trim().slice(0,80),folder=FOLDERS.includes(b.actionFolder)?b.actionFolder:null;const r=await env.DB.prepare(`INSERT INTO mail_rules(user_id,mailbox_id,name,sender_contains,subject_contains,action_folder,action_star,is_active) VALUES(?,?,?,?,?,?,?,1)`).bind(user.id,b.mailboxId?Number(b.mailboxId):null,name,String(b.senderContains||'').trim()||null,String(b.subjectContains||'').trim()||null,folder,boolInt(b.actionStar)).run();return json({ok:true,id:r.meta.last_row_id})}
 
   if(path==='/api/compose'&&request.method==='POST'){
-    const form=await request.formData();const fromMailboxId=Number(form.get('mailboxId')||0),fromMb=await ownsMailbox(env,user.id,fromMailboxId);if(!fromMb||!fromMb.is_active)return badRequest('Mailbox gửi không hợp lệ.');
-    const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),html=cleanEmailHtml(String(form.get('html')||'')),text=String(form.get('text')||'');if(!to.length||to.some(x=>!validEmail(x))||cc.some(x=>!validEmail(x)))return badRequest('Địa chỉ người nhận không hợp lệ.');
-    const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function');let total=0;for(const a of attachments){total+=a.size||0}if(total>8*1024*1024)return badRequest('Tổng tệp đính kèm tối đa 8 MB.');
-
-    const internalTo=[],externalTo=[],internalCc=[],externalCc=[];
-    for(const addr of to){const mb=await resolveMailbox(env,addr);(mb?internalTo:externalTo).push({addr,mb})}
-    for(const addr of cc){const mb=await resolveMailbox(env,addr);(mb?internalCc:externalCc).push({addr,mb})}
-
-    let resendId=null;
-    if(externalTo.length||externalCc.length){
-      try{
-        const r=await sendWithResend(env,{fromAddress:fromMb.address,fromName:user.display_name||fromMb.display_name,to:externalTo.map(x=>x.addr),cc:externalCc.map(x=>x.addr),subject,html,text,attachments});
-        resendId=r?.id||null;
-      }catch(e){
-        console.error('OUTBOUND_SEND_FAILED',{from:fromMb.address,to:externalTo.map(x=>x.addr),cc:externalCc.map(x=>x.addr),message:e?.message||String(e)});
-        return json({ok:false,error:`Không gửi được email ra ngoài. ${e?.message||e}`},502);
-      }
-    }
-
-    const raw=await buildMime({from:fromMb.address,to,cc,subject,text,html,attachments});const baseKey=`messages/outbound/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(baseKey,raw,{httpMetadata:{contentType:'message/rfc822'},customMetadata:{provider:resendId?'resend':'internal',resendId:resendId||''}});
-    const now=new Date().toISOString();const recipientJson=JSON.stringify(to);
-    const sent=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header) VALUES(?,'outbound','sent',?,?,?,?,?,?,?,1,'sent',?,?,?)`).bind(fromMb.id,fromMb.address,recipientJson,JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now,resendId).run();
-    const delivered=new Set();for(const {addr,mb} of [...internalTo,...internalCc]){if(delivered.has(mb.id))continue;delivered.add(mb.id);await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at) VALUES(?,'inbound','inbox',?,?,?,?,?,?,?,0,'received',?,?)`).bind(mb.id,fromMb.address,JSON.stringify([addr]),JSON.stringify(cc),subject,text.slice(0,180),baseKey,raw.byteLength,now,now).run();await notify(env,mb.user_id,`Thư mới từ ${user.display_name||fromMb.address}`,subject||'(Không có tiêu đề)','mail')}
-    await audit(env,user.id,resendId?'mail.external.sent':'mail.internal.sent','message',sent.meta.last_row_id,{to,cc,resendId});return json({ok:true,internal:!resendId,external:!!resendId,resendId,messageId:sent.meta.last_row_id})
+    const form=await request.formData();const fromMailboxId=Number(form.get('mailboxId')||0),senderAddress=normalizeEmail(form.get('senderAddress')||''),fromMb=await resolveSenderIdentity(env,user.id,fromMailboxId,senderAddress);if(!fromMb)return badRequest('Địa chỉ gửi không hợp lệ hoặc bạn không có quyền sử dụng.');
+    const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),bcc=String(form.get('bcc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),html=cleanEmailHtml(String(form.get('html')||'')).slice(0,500000),text=String(form.get('text')||'').slice(0,500000),replyTo=normalizeEmail(form.get('replyTo')||''),priority=String(form.get('priority')||'normal').toLowerCase();if(!to.length||[...to,...cc,...bcc].some(x=>!validEmail(x)))return badRequest('Địa chỉ người nhận không hợp lệ.');if(replyTo&&!validEmail(replyTo))return badRequest('Địa chỉ Reply-To không hợp lệ.');
+    const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function');let total=0;for(const a of attachments)total+=a.size||0;if(total>8*1024*1024)return badRequest('Tổng tệp đính kèm tối đa 8 MB.');
+    let inReplyTo=null,references=[];const replyToMessageId=Number(form.get('replyToMessageId')||0);if(replyToMessageId){const original=await ownsMessage(env,user.id,replyToMessageId);if(original){inReplyTo=original.message_id_header||null;references=inReplyTo?[inReplyTo]:[]}}
+    const generatedMessageId=`<${crypto.randomUUID()}@skyfirst.io.vn>`,groups={to:[],cc:[],bcc:[]};for(const [kind,list] of Object.entries({to,cc,bcc}))for(const addr of list){const mb=await resolveMailbox(env,addr);groups[kind].push({addr,mb})}const external=kind=>groups[kind].filter(x=>!x.mb).map(x=>x.addr);
+    let resendId=null;if(external('to').length||external('cc').length||external('bcc').length){try{const headers={};if(inReplyTo){headers['In-Reply-To']=inReplyTo;headers['References']=references.join(' ')}if(priority==='high'){headers['X-Priority']='1';headers['Importance']='high'}else if(priority==='low'){headers['X-Priority']='5';headers['Importance']='low'}const r=await sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:user.display_name||fromMb.display_name,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html,text,attachments,headers,replyTo});resendId=r?.id||null}catch(e){console.error('OUTBOUND_SEND_FAILED',{from:fromMb.sender_address,to:external('to'),cc:external('cc'),bccCount:external('bcc').length,message:e?.message||String(e)});return json({ok:false,error:`Không gửi được email ra ngoài. ${e?.message||e}`},502)}}
+    const raw=await buildMime({from:fromMb.sender_address,to,cc,bcc,subject,text,html,attachments,messageId:generatedMessageId,inReplyTo,references,replyTo,priority});const baseKey=`messages/outbound/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(baseKey,raw,{httpMetadata:{contentType:'message/rfc822'},customMetadata:{provider:resendId?'resend':'internal',resendId:resendId||''}});const now=new Date().toISOString(),preview=(text||html.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ')).slice(0,180);
+    const sent=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,bcc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header,thread_key) VALUES(?,'outbound','sent',?,?,?,?,?,?,?,?,1,'sent',?,?,?,?)`).bind(fromMb.id,fromMb.sender_address,JSON.stringify(to),JSON.stringify(cc),JSON.stringify(bcc),subject,preview,baseKey,raw.byteLength,now,now,generatedMessageId,inReplyTo||generatedMessageId).run();
+    if(resendId)try{await env.DB.prepare(`INSERT INTO delivery_events(message_id,provider,provider_message_id,event_type,detail_json) VALUES(?,'resend',?,'accepted',?)`).bind(sent.meta.last_row_id,resendId,JSON.stringify({to:external('to'),cc:external('cc'),bccCount:external('bcc').length})).run()}catch{}
+    const delivered=new Set();for(const {addr,mb} of [...groups.to,...groups.cc,...groups.bcc].filter(x=>x.mb)){if(delivered.has(mb.id))continue;delivered.add(mb.id);await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,bcc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header,thread_key) VALUES(?,'inbound','inbox',?,?,?,?,?,?,?,?,0,'received',?,?,?,?)`).bind(mb.id,fromMb.sender_address,JSON.stringify([addr]),JSON.stringify(cc),JSON.stringify([]),subject,preview,baseKey,raw.byteLength,now,now,generatedMessageId,inReplyTo||generatedMessageId).run();await notify(env,mb.user_id,`Thư mới từ ${user.display_name||fromMb.sender_address}`,subject||'(Không có tiêu đề)','mail')}
+    await audit(env,user.id,resendId?'mail.external.sent':'mail.internal.sent','message',sent.meta.last_row_id,{from:fromMb.sender_address,to,cc,bccCount:bcc.length,resendId,replyToMessageId:replyToMessageId||null});return json({ok:true,internal:!resendId,external:!!resendId,resendId,messageId:sent.meta.last_row_id})
   }
 
 
   // V4 reliability + productivity endpoints
   if(path==='/api/health'&&request.method==='GET'){
-    return json({ok:true,service:'Sky First Mail',version:'4.0',time:new Date().toISOString(),outbound:!!env.RESEND_API_KEY,storage:!!env.MAIL_STORAGE});
+    return json({ok:true,service:'Sky First Mail',version:'5.0',time:new Date().toISOString(),outbound:!!env.RESEND_API_KEY,storage:!!env.MAIL_STORAGE});
   }
   if(path==='/api/mailbox/usage'&&request.method==='GET'){
     const r=await env.DB.prepare(`SELECT count(*) message_count,COALESCE(sum(m.raw_size),0) message_bytes FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=?`).bind(user.id).first();
@@ -361,17 +376,17 @@ async function routeApi(request,env){
     return json({ok:true});
   }
   if(path==='/api/drafts'&&request.method==='GET'){
-    const r=await env.DB.prepare(`SELECT id,mailbox_id,to_json,cc_json,subject,body_text,attachment_names_json,created_at,updated_at FROM compose_drafts WHERE user_id=? ORDER BY updated_at DESC LIMIT 100`).bind(user.id).all();
+    const r=await env.DB.prepare(`SELECT id,mailbox_id,to_json,cc_json,bcc_json,subject,body_text,body_html,sender_address,reply_to_message_id,attachment_names_json,created_at,updated_at FROM compose_drafts WHERE user_id=? ORDER BY updated_at DESC LIMIT 100`).bind(user.id).all();
     return json({ok:true,drafts:r.results||[]});
   }
   if(path==='/api/drafts'&&request.method==='POST'){
     const form=await request.formData();const id=Number(form.get('draftId')||0),mailboxId=Number(form.get('mailboxId')||0),mb=await ownsMailbox(env,user.id,mailboxId);if(!mb)return badRequest('Mailbox không hợp lệ.');
-    const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),text=String(form.get('text')||'').slice(0,200000);
+    const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),bcc=String(form.get('bcc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),text=String(form.get('text')||'').slice(0,500000),html=cleanEmailHtml(String(form.get('html')||'')).slice(0,500000),senderAddress=normalizeEmail(form.get('senderAddress')||mb.address),replyToMessageId=Number(form.get('replyToMessageId')||0)||null;
     const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function');let total=0;for(const a of attachments)total+=a.size||0;if(total>8*1024*1024)return badRequest('Tổng tệp đính kèm tối đa 8 MB.');
     let storageKey=null,names=attachments.map(a=>String(a.name||'attachment').slice(0,180));
-    if(attachments.length){const raw=await buildMime({from:mb.address,to:to.length?to:[mb.address],cc,subject,text,attachments});storageKey=`drafts/${user.id}/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(storageKey,raw,{httpMetadata:{contentType:'message/rfc822'}})}
-    if(id){const old=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(id,user.id).first();if(!old)return notFound('Không tìm thấy bản nháp.');await env.DB.prepare(`UPDATE compose_drafts SET mailbox_id=?,to_json=?,cc_json=?,subject=?,body_text=?,storage_key=COALESCE(?,storage_key),attachment_names_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`).bind(mailboxId,JSON.stringify(to),JSON.stringify(cc),subject,text,storageKey,JSON.stringify(names),id,user.id).run();if(storageKey&&old.storage_key&&old.storage_key!==storageKey){try{await env.MAIL_STORAGE.delete(old.storage_key)}catch{}}return json({ok:true,id})}
-    const r=await env.DB.prepare(`INSERT INTO compose_drafts(user_id,mailbox_id,to_json,cc_json,subject,body_text,storage_key,attachment_names_json) VALUES(?,?,?,?,?,?,?,?)`).bind(user.id,mailboxId,JSON.stringify(to),JSON.stringify(cc),subject,text,storageKey,JSON.stringify(names)).run();return json({ok:true,id:r.meta.last_row_id});
+    if(attachments.length){const raw=await buildMime({from:senderAddress||mb.address,to:to.length?to:[mb.address],cc,bcc,subject,text,html,attachments});storageKey=`drafts/${user.id}/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(storageKey,raw,{httpMetadata:{contentType:'message/rfc822'}})}
+    if(id){const old=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(id,user.id).first();if(!old)return notFound('Không tìm thấy bản nháp.');await env.DB.prepare(`UPDATE compose_drafts SET mailbox_id=?,to_json=?,cc_json=?,bcc_json=?,subject=?,body_text=?,body_html=?,sender_address=?,reply_to_message_id=?,storage_key=COALESCE(?,storage_key),attachment_names_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`).bind(mailboxId,JSON.stringify(to),JSON.stringify(cc),JSON.stringify(bcc),subject,text,html,senderAddress,replyToMessageId,storageKey,JSON.stringify(names),id,user.id).run();if(storageKey&&old.storage_key&&old.storage_key!==storageKey){try{await env.MAIL_STORAGE.delete(old.storage_key)}catch{}}return json({ok:true,id})}
+    const r=await env.DB.prepare(`INSERT INTO compose_drafts(user_id,mailbox_id,to_json,cc_json,bcc_json,subject,body_text,body_html,sender_address,reply_to_message_id,storage_key,attachment_names_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(user.id,mailboxId,JSON.stringify(to),JSON.stringify(cc),JSON.stringify(bcc),subject,text,html,senderAddress,replyToMessageId,storageKey,JSON.stringify(names)).run();return json({ok:true,id:r.meta.last_row_id});
   }
   const dm=path.match(/^\/api\/drafts\/(\d+)$/);
   if(dm&&request.method==='GET'){

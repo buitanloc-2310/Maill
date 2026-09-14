@@ -1,0 +1,117 @@
+(()=>{
+  'use strict';
+  const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+  const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const strip=html=>{const d=document.createElement('div');d.innerHTML=html||'';return (d.textContent||'').replace(/\n{3,}/g,'\n\n').trim()};
+  async function req(url,opts={}){const isForm=opts.body instanceof FormData;const r=await fetch(url,{...opts,headers:{...(isForm?{}:{'content-type':'application/json'}),...(opts.headers||{})}});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);return d}
+  function toast(text,type='ok'){let box=$('#v5-toasts');if(!box){box=document.createElement('div');box.id='v5-toasts';document.body.appendChild(box)}const n=document.createElement('div');n.className=`v5-toast ${type}`;n.textContent=text;box.appendChild(n);requestAnimationFrame(()=>n.classList.add('show'));setTimeout(()=>{n.classList.remove('show');setTimeout(()=>n.remove(),200)},3600)}
+  function parseAddress(v=''){const m=String(v).match(/<([^>]+)>/);return (m?m[1]:v).trim()}
+  function ensureSubject(prefix,s=''){const clean=String(s||'').replace(/^\s*(re|fwd?)\s*:\s*/i,'');return `${prefix}: ${clean||'(Không có tiêu đề)'}`}
+  function sanitizeClipboardHtml(html=''){
+    const doc=new DOMParser().parseFromString(String(html||''),'text/html');
+    doc.querySelectorAll('script,iframe,object,embed,form,meta,base,link').forEach(n=>n.remove());
+    // Style blocks copied from a whole webpage can leak into the mail UI. Gmail-style clipboard
+    // fragments normally carry inline style, which is preserved below.
+    doc.querySelectorAll('style').forEach(n=>n.remove());
+    doc.querySelectorAll('*').forEach(el=>{
+      [...el.attributes].forEach(a=>{
+        const n=a.name.toLowerCase(),v=String(a.value||'');
+        if(n.startsWith('on')||/javascript\s*:/i.test(v))el.removeAttribute(a.name);
+      });
+      if(el.tagName==='A'&&el.getAttribute('href'))el.setAttribute('rel','noopener noreferrer');
+      if(el.tagName==='IMG'){el.removeAttribute('srcset');el.style.maxWidth=el.style.maxWidth||'100%';}
+    });
+    return doc.body.innerHTML;
+  }
+  function insertHtmlAtCursor(el,html){
+    el.focus();
+    const sel=getSelection();
+    if(!sel||!sel.rangeCount){el.insertAdjacentHTML('beforeend',html);return}
+    const range=sel.getRangeAt(0);range.deleteContents();
+    const frag=range.createContextualFragment(html);const last=frag.lastChild;range.insertNode(frag);
+    if(last){range.setStartAfter(last);range.collapse(true);sel.removeAllRanges();sel.addRange(range)}
+  }
+  function modal(){const w=document.createElement('div');w.className='modal-wrap v5-wrap';w.innerHTML=`<section class="modal wide v5-compose"><button class="modal-x" aria-label="Đóng">×</button><div id="v5-host"></div></section>`;document.body.appendChild(w);return w}
+  function setFiles(input,arr){const dt=new DataTransfer();arr.forEach(f=>dt.items.add(f));input.files=dt.files}
+  async function advancedCompose(seed={}){
+    const w=modal(),host=$('#v5-host',w);host.innerHTML='<div class="v5-loading">Đang mở Mail Studio…</div>';
+    let identities={mailboxes:[],aliases:[]},templates={templates:[]},signatures={signatures:[]};
+    try{[identities,templates,signatures]=await Promise.all([req('/api/sender-identities'),req('/api/templates'),req('/api/signatures')])}catch(e){toast(e.message,'err')}
+    const primary=identities.mailboxes.find(x=>x.is_primary)||identities.mailboxes[0];
+    const identityOptions=[...identities.mailboxes.map(m=>({mailboxId:m.id,address:m.address,label:m.address})),...identities.aliases.map(a=>({mailboxId:a.mailbox_id,address:a.address,label:`${a.address} · alias`}))];
+    host.innerHTML=`
+      <div class="v5-compose-head"><div><span class="v5-kicker">SKY FIRST MAIL STUDIO · V5 PRO</span><h2>${seed.mode==='reply'?'Trả lời':seed.mode==='forward'?'Chuyển tiếp':'Tin nhắn mới'}</h2><p>Rich HTML Clipboard · Import HTML · Preview · Template · Alias · Bcc · Smart compose workspace</p></div><div class="v5-head-actions"><span class="v5-save-state" id="v5-save-state">Chưa lưu nháp</span><button type="button" class="v5-icon-btn" id="v5-full" title="Toàn màn hình">⛶</button></div></div>
+      <form id="v5-form">
+        <div class="v5-address-grid">
+          <label><span>Từ</span><select id="v5-from">${identityOptions.map(x=>`<option value="${esc(x.mailboxId)}|${esc(x.address)}" ${x.address===seed.from?'selected':''}>${esc(x.label)}</option>`).join('')}</select></label>
+          <label class="v5-to-field"><span>Đến</span><input id="v5-to" value="${esc(seed.to||'')}" placeholder="nguoinhan@example.com" required></label>
+          <label><span>Cc</span><input id="v5-cc" value="${esc(seed.cc||'')}" placeholder="Cc"></label>
+          <label><span>Bcc</span><input id="v5-bcc" value="${esc(seed.bcc||'')}" placeholder="Bcc"></label>
+        </div>
+        <div class="v5-advanced-row"><button type="button" class="v5-text-btn" id="v5-toggle-advanced">＋ Tuỳ chọn gửi</button><span id="v5-recipient-count"></span></div>
+        <div class="v5-advanced-options" id="v5-advanced-options" hidden>
+          <label><span>Reply-To</span><input id="v5-reply-to" placeholder="Địa chỉ nhận phản hồi (tuỳ chọn)"></label>
+          <label><span>Ưu tiên</span><select id="v5-priority"><option value="normal">Bình thường</option><option value="high">Cao</option><option value="low">Thấp</option></select></label>
+        </div>
+        <input id="v5-subject" class="subject-input" value="${esc(seed.subject||'')}" placeholder="Tiêu đề">
+        <div class="v5-studio-bar"><div class="v5-tabs"><button type="button" data-mode="visual" class="active">✎ Soạn thảo</button><button type="button" data-mode="html">&lt;/&gt; HTML</button><button type="button" data-mode="preview">◉ Xem trước</button></div><div class="v5-actions"><label class="secondary v5-filebtn">⇧ Nhập HTML<input id="v5-html-file" type="file" accept=".html,.htm,text/html" hidden></label><button type="button" class="secondary" id="v5-template">▦ Mẫu</button><button type="button" class="secondary" id="v5-save-template">＋ Lưu mẫu</button></div></div>
+        <div class="v5-editor-tools" id="v5-tools">
+          <div class="v5-tool-group"><button type="button" data-cmd="undo" title="Hoàn tác">↶</button><button type="button" data-cmd="redo" title="Làm lại">↷</button></div>
+          <select id="v5-font" title="Phông chữ"><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Tahoma">Tahoma</option><option value="Verdana">Verdana</option><option value="Trebuchet MS">Trebuchet</option><option value="Courier New">Courier</option></select>
+          <select id="v5-size" title="Cỡ chữ"><option value="2">Nhỏ</option><option value="3" selected>Thường</option><option value="4">Lớn</option><option value="5">Rất lớn</option><option value="6">Tiêu đề</option></select>
+          <div class="v5-tool-group"><button type="button" data-cmd="bold"><b>B</b></button><button type="button" data-cmd="italic"><i>I</i></button><button type="button" data-cmd="underline"><u>U</u></button><button type="button" data-cmd="strikeThrough"><s>S</s></button></div>
+          <label class="v5-color" title="Màu chữ">A<input id="v5-color" type="color" value="#172033"></label><label class="v5-color v5-highlight" title="Màu nền">▰<input id="v5-highlight" type="color" value="#fff59d"></label>
+          <div class="v5-tool-group"><button type="button" data-cmd="justifyLeft" title="Căn trái">≡</button><button type="button" data-cmd="justifyCenter" title="Căn giữa">≡</button><button type="button" data-cmd="justifyRight" title="Căn phải">≡</button></div>
+          <div class="v5-tool-group"><button type="button" data-cmd="insertUnorderedList">• List</button><button type="button" data-cmd="insertOrderedList">1. List</button><button type="button" data-cmd="outdent">⇤</button><button type="button" data-cmd="indent">⇥</button></div>
+          <button type="button" id="v5-link" title="Liên kết">🔗</button><button type="button" id="v5-image" title="Ảnh từ URL">🖼</button><button type="button" id="v5-emoji" title="Emoji">☺</button><button type="button" id="v5-hr" title="Đường phân cách">―</button><button type="button" data-block="blockquote" title="Trích dẫn">❝</button><button type="button" id="v5-clear" title="Xoá định dạng">Tx</button>
+          <span class="v5-paste-hint">Ctrl+V giữ HTML như Gmail</span>
+        </div>
+        <div class="v5-editor-stage"><div id="v5-visual" class="v5-visual" contenteditable="true" spellcheck="true" data-placeholder="Viết nội dung email… Bạn có thể copy một email HTML đã hiển thị rồi Ctrl+V vào đây."></div><textarea id="v5-source" class="v5-source" spellcheck="false" placeholder="<table>…</table>"></textarea><iframe id="v5-preview" class="v5-preview" sandbox="allow-popups" referrerpolicy="no-referrer"></iframe></div>
+        <div class="v5-compose-meta"><span id="v5-stats">0 từ · 0 ký tự</span><span>HTML clipboard được giữ định dạng; script và mã nguy hiểm sẽ bị loại.</span></div>
+        <div class="v5-bottom-grid"><div><div class="v5-drop" id="v5-drop"><b>📎 Tệp đính kèm</b><span>Kéo thả nhiều tệp vào đây hoặc bấm để chọn</span><input id="v5-files" type="file" multiple></div><div id="v5-file-list" class="v5-file-list"></div></div><label><span>Chữ ký</span><select id="v5-signature"><option value="">Không chèn</option>${signatures.signatures.map(s=>`<option value="${s.id}">${esc(s.name)}${s.is_default?' · mặc định':''}</option>`).join('')}</select></label></div>
+        <div class="compose-foot v5-foot"><button type="button" class="secondary" id="v5-discard" title="Huỷ bản nháp">🗑</button><button type="button" class="secondary" id="v5-save-draft">Lưu nháp</button><button type="button" class="secondary" id="v5-send-test">Gửi thử</button><span class="v5-shortcut">Ctrl/⌘ + Enter để gửi</span><span class="v5-spacer"></span><button class="primary v5-send-main" id="v5-send">Gửi <span>⌘↵</span></button></div><div id="v5-msg"></div>
+      </form>`;
+    const form=$('#v5-form',w), visual=$('#v5-visual',w), source=$('#v5-source',w), preview=$('#v5-preview',w), files=$('#v5-files',w), fileList=$('#v5-file-list',w), state=$('#v5-save-state',w), compose=$('.v5-compose',w);
+    visual.innerHTML=seed.html||esc(seed.text||'').replace(/\n/g,'<br>');source.value=visual.innerHTML;let mode='visual',draftId=seed.draftId||null,timer=null,dirty=false;
+    const syncFromVisual=()=>{source.value=visual.innerHTML};const syncFromSource=()=>{visual.innerHTML=source.value};
+    const updateStats=()=>{const t=strip(mode==='html'?source.value:visual.innerHTML);const words=t? t.split(/\s+/).filter(Boolean).length:0;$('#v5-stats',w).textContent=`${words} từ · ${t.length} ký tự`};
+    const updateRecipientCount=()=>{const count=['#v5-to','#v5-cc','#v5-bcc'].flatMap(s=>$(s,w).value.split(/[;,]/).map(x=>x.trim()).filter(Boolean)).length;$('#v5-recipient-count',w).textContent=count?`${count} người nhận`:''};
+    const renderPreview=()=>{if(mode==='visual')syncFromVisual();preview.srcdoc=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;background:#eef3f7}body{padding:28px 12px;font-family:Arial,Helvetica,sans-serif;color:#172033;line-height:1.55}.sfm-preview-shell{max-width:760px;margin:auto;background:#fff;box-shadow:0 10px 40px rgba(20,50,80,.10);min-height:240px}img{max-width:100%;height:auto}table{max-width:100%}a{color:#0b74de}</style></head><body><div class="sfm-preview-shell">${source.value}</div></body></html>`};
+    const setMode=m=>{if(mode==='visual')syncFromVisual();if(mode==='html')syncFromSource();mode=m;$$('[data-mode]',w).forEach(b=>b.classList.toggle('active',b.dataset.mode===m));visual.style.display=m==='visual'?'block':'none';source.style.display=m==='html'?'block':'none';preview.style.display=m==='preview'?'block':'none';$('#v5-tools',w).style.display=m==='visual'?'flex':'none';if(m==='preview')renderPreview();updateStats()};setMode('visual');$$('[data-mode]',w).forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+    const cmd=(name,val=null)=>{visual.focus();document.execCommand(name,false,val);syncFromVisual();dirty=true;updateStats()};
+    $$('[data-cmd]',w).forEach(b=>b.onclick=()=>cmd(b.dataset.cmd));$$('[data-block]',w).forEach(b=>b.onclick=()=>cmd('formatBlock',b.dataset.block));
+    $('#v5-font',w).onchange=e=>cmd('fontName',e.target.value);$('#v5-size',w).onchange=e=>cmd('fontSize',e.target.value);$('#v5-color',w).oninput=e=>cmd('foreColor',e.target.value);$('#v5-highlight',w).oninput=e=>cmd('hiliteColor',e.target.value);
+    $('#v5-link',w).onclick=()=>{const u=prompt('URL liên kết (https://...)');if(u)cmd('createLink',u)};
+    $('#v5-image',w).onclick=()=>{const u=prompt('URL ảnh (https://...)');if(u&&/^https?:\/\//i.test(u))insertHtmlAtCursor(visual,`<img src="${esc(u)}" alt="" style="max-width:100%;height:auto">`);syncFromVisual();updateStats()};
+    $('#v5-emoji',w).onclick=()=>{const picker=document.createElement('div');picker.className='v5-emoji-picker';picker.innerHTML='😀 😃 😄 😊 😍 🥰 😎 🤝 👍 👏 🎉 ✨ 💙 💜 ✅ 📌 📎 📅 📣 🚀'.split(' ').map(x=>`<button type="button">${x}</button>`).join('');$('#v5-emoji',w).after(picker);$$('button',picker).forEach(b=>b.onclick=()=>{insertHtmlAtCursor(visual,b.textContent);picker.remove();syncFromVisual();updateStats()});setTimeout(()=>document.addEventListener('click',e=>{if(!picker.contains(e.target)&&e.target!==$('#v5-emoji',w))picker.remove()},{once:true}),0)};
+    $('#v5-hr',w).onclick=()=>{insertHtmlAtCursor(visual,'<hr style="border:0;border-top:1px solid #d9e2ec;margin:18px 0">');syncFromVisual()};$('#v5-clear',w).onclick=()=>cmd('removeFormat');
+    visual.addEventListener('paste',e=>{
+      const html=e.clipboardData?.getData('text/html');const text=e.clipboardData?.getData('text/plain');const imageFiles=[...(e.clipboardData?.files||[])].filter(f=>f.type.startsWith('image/'));
+      if(html){e.preventDefault();const cleaned=sanitizeClipboardHtml(html);insertHtmlAtCursor(visual,cleaned);syncFromVisual();dirty=true;updateStats();toast('Đã dán HTML và giữ định dạng như email gốc.');return}
+      if(imageFiles.length){const current=[...files.files];setFiles(files,[...current,...imageFiles]);renderFiles();toast('Ảnh từ clipboard đã được thêm vào tệp đính kèm.');return}
+      if(text){setTimeout(()=>{syncFromVisual();updateStats()},0)}
+    });
+    $('#v5-html-file',w).onchange=async e=>{const f=e.target.files?.[0];if(!f)return;const html=await f.text();source.value=html;syncFromSource();dirty=true;setMode('preview');toast(`Đã nhập ${f.name}. Hãy kiểm tra Preview trước khi gửi.`)};
+    const renderFiles=()=>{let total=0;fileList.innerHTML=[...files.files].map((f,i)=>{total+=f.size;return`<span>📎 ${esc(f.name)} <small>${f.size<1024*1024?(f.size/1024).toFixed(1)+' KB':(f.size/1024/1024).toFixed(2)+' MB'}</small><button type="button" data-remove-file="${i}" aria-label="Xoá">×</button></span>`}).join('');$$('[data-remove-file]',fileList).forEach(b=>b.onclick=()=>{const arr=[...files.files];arr.splice(Number(b.dataset.removeFile),1);setFiles(files,arr);renderFiles()});$('#v5-send',w).disabled=total>8*1024*1024;if(total>8*1024*1024)toast('Tệp đính kèm vượt giới hạn 8 MB.','warn')};files.onchange=renderFiles;
+    const drop=$('#v5-drop',w);['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over')}));['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over')}));drop.addEventListener('drop',async e=>{const incoming=[...e.dataTransfer.files];const htmlFile=incoming.find(f=>/\.html?$/i.test(f.name)||f.type==='text/html');if(htmlFile){source.value=await htmlFile.text();syncFromSource();setMode('preview');toast(`Đã nhập ${htmlFile.name} dưới dạng nội dung HTML.`)}const attach=incoming.filter(f=>f!==htmlFile);if(attach.length){setFiles(files,[...files.files,...attach]);renderFiles()}});
+    $('#v5-toggle-advanced',w).onclick=()=>{const a=$('#v5-advanced-options',w);a.hidden=!a.hidden;$('#v5-toggle-advanced',w).textContent=a.hidden?'＋ Tuỳ chọn gửi':'− Thu gọn tuỳ chọn'};
+    $('#v5-full',w).onclick=()=>{compose.classList.toggle('v5-fullscreen');$('#v5-full',w).textContent=compose.classList.contains('v5-fullscreen')?'↙':'⛶'};
+    const selectedFrom=()=>{const [mailboxId,address]=$('#v5-from',w).value.split('|');return{mailboxId:Number(mailboxId||primary?.id||0),address:address||primary?.address||''}};
+    const makeFd=(overrideTo=null)=>{if(mode==='visual')syncFromVisual();if(mode==='html')syncFromSource();const fd=new FormData(),fr=selectedFrom();fd.set('mailboxId',fr.mailboxId);fd.set('senderAddress',fr.address);fd.set('to',overrideTo??$('#v5-to',w).value);fd.set('cc',overrideTo?'':$('#v5-cc',w).value);fd.set('bcc',overrideTo?'':$('#v5-bcc',w).value);fd.set('subject',$('#v5-subject',w).value);fd.set('html',source.value);fd.set('text',strip(source.value));fd.set('replyTo',$('#v5-reply-to',w).value);fd.set('priority',$('#v5-priority',w).value);if(seed.replyToMessageId)fd.set('replyToMessageId',seed.replyToMessageId);for(const f of files.files)fd.append('attachments',f,f.name);return fd};
+    const saveDraft=async(silent=false)=>{if(!$('#v5-to',w).value&&!$('#v5-subject',w).value&&!strip(mode==='html'?source.value:visual.innerHTML))return;try{state.textContent='Đang lưu…';const fd=makeFd();fd.set('draftId',draftId||'');const d=await req('/api/drafts',{method:'POST',body:fd});draftId=d.id;dirty=false;state.textContent='✓ Đã lưu nháp';if(!silent)toast('Đã lưu bản nháp.')}catch(e){state.textContent='Lỗi lưu nháp';if(!silent)toast(e.message,'err')}};
+    const markChanged=()=>{dirty=true;state.textContent='Có thay đổi chưa lưu';clearTimeout(timer);timer=setTimeout(()=>saveDraft(true),1800);updateStats();updateRecipientCount()};form.addEventListener('input',markChanged);source.addEventListener('input',updateStats);$('#v5-save-draft',w).onclick=()=>saveDraft(false);
+    const send=async(test=false)=>{try{if(mode==='visual')syncFromVisual();if(mode==='html')syncFromSource();if(!$('#v5-subject',w).value.trim()&&!test&&!confirm('Email chưa có tiêu đề. Vẫn gửi?'))return;const target=test?(await req('/api/me')).user.email:null;const fd=makeFd(target);$('#v5-send',w).disabled=true;$('#v5-send',w).innerHTML='Đang gửi…';const d=await req('/api/compose',{method:'POST',body:fd});if(test){toast('Đã gửi thư thử cho chính bạn.');$('#v5-send',w).disabled=false;$('#v5-send',w).innerHTML='Gửi <span>⌘↵</span>';return}if(draftId)req(`/api/drafts/${draftId}`,{method:'DELETE'}).catch(()=>{});dirty=false;toast('Đã gửi email.');w.remove();$('#reload')?.click()}catch(e){toast(e.message,'err');$('#v5-send',w).disabled=false;$('#v5-send',w).innerHTML='Gửi <span>⌘↵</span>'}};form.onsubmit=e=>{e.preventDefault();send(false)};$('#v5-send-test',w).onclick=()=>send(true);
+    $('#v5-template',w).onclick=()=>templatePicker(templates.templates,t=>{$('#v5-subject',w).value=t.subject||'';source.value=t.body_html||esc(t.body_text||'').replace(/\n/g,'<br>');syncFromSource();setMode('visual');markChanged();toast(`Đã nạp mẫu “${t.name}”.`) });
+    $('#v5-save-template',w).onclick=async()=>{if(mode==='visual')syncFromVisual();const name=prompt('Tên mẫu email:');if(!name)return;try{await req('/api/templates',{method:'POST',body:JSON.stringify({name,subject:$('#v5-subject',w).value,bodyHtml:source.value,bodyText:strip(source.value)})});templates=await req('/api/templates');toast('Đã lưu mẫu email.')}catch(e){toast(e.message,'err')}};
+    $('#v5-signature',w).onchange=()=>{const id=Number($('#v5-signature',w).value);const sg=signatures.signatures.find(x=>x.id===id);if(!sg)return;visual.innerHTML+=`<div class="sfm-signature"><br>${sg.content_html||''}</div>`;syncFromVisual();markChanged()};
+    $('#v5-discard',w).onclick=async()=>{if(!confirm('Huỷ bản nháp và đóng cửa sổ soạn?'))return;if(draftId)await req(`/api/drafts/${draftId}`,{method:'DELETE'}).catch(()=>{});dirty=false;w.remove()};
+    $('.modal-x',w).onclick=async()=>{if(dirty){const ok=confirm('Bạn có thay đổi chưa lưu. Lưu bản nháp trước khi đóng?');if(ok)await saveDraft(true)}w.remove()};w.onclick=e=>{if(e.target===w&&confirm('Đóng cửa sổ soạn?'))w.remove()};
+    form.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();send(false)}if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='s'){e.preventDefault();saveDraft(false)}});
+    updateStats();updateRecipientCount();
+  }
+  function templatePicker(list,onPick){const w=document.createElement('div');w.className='v5-picker-wrap';w.innerHTML=`<section class="v5-picker"><div class="v5-picker-head"><div><span class="v5-kicker">TEMPLATE CENTER</span><h3>Mẫu email</h3></div><button>×</button></div><div>${list.length?list.map(t=>`<button class="v5-template-card" data-id="${t.id}"><b>${esc(t.name)}</b><span>${esc(t.subject||'(Không có tiêu đề)')}</span><small>${esc(t.category||'personal')}</small></button>`).join(''):'<p class="muted">Chưa có mẫu. Soạn email rồi chọn “Lưu thành mẫu”.</p>'}</div></section>`;document.body.appendChild(w);$('.v5-picker-head>button',w).onclick=()=>w.remove();$$('[data-id]',w).forEach(b=>b.onclick=()=>{onPick(list.find(x=>x.id===Number(b.dataset.id)));w.remove()})}
+  function interceptCompose(){document.addEventListener('click',e=>{const b=e.target.closest('#compose');if(!b)return;e.preventDefault();e.stopImmediatePropagation();advancedCompose()},{capture:true})}
+  function enhanceReader(){const msg=$('#reader .message');if(!msg||msg.dataset.v5)return;msg.dataset.v5='1';const reply=$('#reply',msg),forward=$('#forward',msg);if(reply)reply.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();const sender=$('.senderline b',msg)?.textContent||'';const subject=$('h1',msg)?.textContent||'';advancedCompose({mode:'reply',to:parseAddress(sender),subject:ensureSubject('Re',subject),replyToMessageId:Number(msg.dataset.messageId||0)})},{capture:true});if(forward)forward.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();const subject=$('h1',msg)?.textContent||'';const frame=$('#mailframe',msg);let html='';try{html=frame?.contentDocument?.body?.innerHTML||''}catch{}if(!html)html=$('.textmail',msg)?.innerHTML||'';advancedCompose({mode:'forward',subject:ensureSubject('Fwd',subject),html:`<br><br><div style="border-top:1px solid #d9e2ec;padding-top:14px"><b>---------- Thư được chuyển tiếp ----------</b><br>${html}</div>`})},{capture:true});const bar=$('.replybar',msg);if(bar&&!$('#v5-reply-all',msg)){const a=document.createElement('button');a.id='v5-reply-all';a.className='secondary';a.textContent='↩↩ Trả lời tất cả';a.onclick=()=>{const sender=$('.senderline b',msg)?.textContent||'';const subject=$('h1',msg)?.textContent||'';const toline=$('.senderline span',msg)?.textContent?.replace(/^đến\s+/i,'')||'';advancedCompose({mode:'reply',to:parseAddress(sender),cc:toline,subject:ensureSubject('Re',subject),replyToMessageId:Number(msg.dataset.messageId||0)})};bar.insertBefore(a,bar.children[1]||null)}}
+  function polish(){const sys=$('.aside-system span:last-child');if(sys&&sys.textContent!=='Sky First Mail V5 Pro')sys.textContent='Sky First Mail V5 Pro';enhanceReader()}
+  new MutationObserver(polish).observe(document.documentElement,{subtree:true,childList:true});interceptCompose();polish();
+})();

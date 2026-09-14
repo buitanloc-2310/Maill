@@ -26,27 +26,43 @@ function toBase64(bytes) {
   return btoa(out);
 }
 
-export async function buildMime({from,to,cc=[],subject='',text='',html='',attachments=[]}) {
-  const boundary=`sfm_${crypto.randomUUID().replaceAll('-','')}`;
+export async function buildMime({from,to,cc=[],bcc=[],subject='',text='',html='',attachments=[],messageId=null,inReplyTo=null,references=[],replyTo='',priority='normal'}) {
+  const mixed=`sfm_mix_${crypto.randomUUID().replaceAll('-','')}`;
+  const alt=`sfm_alt_${crypto.randomUUID().replaceAll('-','')}`;
+  const htmlBody=cleanEmailHtml(html || `<div>${String(text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>`);
+  const textBody=String(text||'').trim() || htmlBody.replace(/<style[\s\S]*?<\/style>/gi,' ').replace(/<[^>]+>/g,' ').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/\s+/g,' ').trim();
+  const mid=encHeader(messageId || `<${crypto.randomUUID()}@sky-first-mail.local>`);
+  const refs=(Array.isArray(references)?references:[]).map(encHeader).filter(Boolean);
   const lines=[
     `From: ${encHeader(from)}`,
     `To: ${to.map(encHeader).join(', ')}`,
     ...(cc.length?[`Cc: ${cc.map(encHeader).join(', ')}`]:[]),
     `Subject: ${encHeader(subject || '(Không có tiêu đề)')}`,
+    ...(replyTo?[`Reply-To: ${encHeader(replyTo)}`]:[]),
+    ...(priority==='high'?['X-Priority: 1','Importance: high']:priority==='low'?['X-Priority: 5','Importance: low']:[]),
     `Date: ${new Date().toUTCString()}`,
-    `Message-ID: <${crypto.randomUUID()}@sky-first-mail.local>`,
+    `Message-ID: ${mid}`,
+    ...(inReplyTo?[`In-Reply-To: ${encHeader(inReplyTo)}`]:[]),
+    ...(refs.length?[`References: ${refs.join(' ')}`]:[]),
     'MIME-Version: 1.0',
-    `Content-Type: multipart/mixed; boundary="${boundary}"`, '',
-    `--${boundary}`,
+    `Content-Type: multipart/mixed; boundary="${mixed}"`, '',
+    `--${mixed}`,
+    `Content-Type: multipart/alternative; boundary="${alt}"`, '',
+    `--${alt}`,
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit','',
+    textBody,'',
+    `--${alt}`,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: 8bit','',
-    cleanEmailHtml(html || `<div>${String(text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div>`),'',
+    htmlBody,'',
+    `--${alt}--`,''
   ];
   for (const a of attachments) {
     const ab=await a.arrayBuffer();
     const b64=toBase64(ab).replace(/(.{76})/g,'$1\r\n');
-    lines.push(`--${boundary}`,`Content-Type: ${a.type||'application/octet-stream'}; name="${encHeader(a.name||'attachment')}"`,`Content-Disposition: attachment; filename="${encHeader(a.name||'attachment')}"`,'Content-Transfer-Encoding: base64','',b64,'');
+    lines.push(`--${mixed}`,`Content-Type: ${a.type||'application/octet-stream'}; name="${encHeader(a.name||'attachment')}"`,`Content-Disposition: attachment; filename="${encHeader(a.name||'attachment')}"`,'Content-Transfer-Encoding: base64','',b64,'');
   }
-  lines.push(`--${boundary}--`,'');
+  lines.push(`--${mixed}--`,'');
   return new TextEncoder().encode(lines.join('\r\n')).buffer;
 }
