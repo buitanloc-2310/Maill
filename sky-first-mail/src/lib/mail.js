@@ -26,7 +26,7 @@ function toBase64(bytes) {
   return btoa(out);
 }
 
-export async function buildMime({from,to,cc=[],bcc=[],subject='',text='',html='',attachments=[],messageId=null,inReplyTo=null,references=[],replyTo='',priority='normal'}) {
+export async function buildMime({from,to,cc=[],bcc=[],subject='',text='',html='',attachments=[],inlineAttachments=[],inlineCidMap=[],messageId=null,inReplyTo=null,references=[],replyTo='',priority='normal'}) {
   const mixed=`sfm_mix_${crypto.randomUUID().replaceAll('-','')}`;
   const alt=`sfm_alt_${crypto.randomUUID().replaceAll('-','')}`;
   const htmlBody=cleanEmailHtml(html || `<div>${String(text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>')}</div>`);
@@ -58,6 +58,13 @@ export async function buildMime({from,to,cc=[],bcc=[],subject='',text='',html=''
     htmlBody,'',
     `--${alt}--`,''
   ];
+  const cidByName=new Map((Array.isArray(inlineCidMap)?inlineCidMap:[]).map(x=>[String(x?.name||''),String(x?.cid||'')]));
+  for (const a of inlineAttachments) {
+    const ab=await a.arrayBuffer();
+    const b64=toBase64(ab).replace(/(.{76})/g,'$1\r\n');
+    const cid=encHeader(cidByName.get(String(a.name||''))||`sfm-inline-${crypto.randomUUID()}`);
+    lines.push(`--${mixed}`,`Content-Type: ${a.type||'application/octet-stream'}; name="${encHeader(a.name||'inline-image')}"`,`Content-Disposition: inline; filename="${encHeader(a.name||'inline-image')}"`,`Content-ID: <${cid}>`,'Content-Transfer-Encoding: base64','',b64,'');
+  }
   for (const a of attachments) {
     const ab=await a.arrayBuffer();
     const b64=toBase64(ab).replace(/(.{76})/g,'$1\r\n');
