@@ -152,7 +152,7 @@
     const nav = qs('nav', a);
     if (nav) a.insertBefore(label, nav);
     const system = qs('.aside-system', a);
-    if (system) system.innerHTML = '<span class="live-dot"></span><span>Sky First Mail v3 · Cloud</span>';
+    if (system) system.innerHTML = '<span class="live-dot"></span><span>Trung tâm Thư điện tử Sky First</span>';
   }
 
   function commandPalette() {
@@ -214,7 +214,7 @@
     if (sender) {
       const badge = document.createElement('span');
       badge.className = 'v3-security-badge';
-      badge.textContent = '✓ Đã nhận qua Sky First Mail';
+      badge.textContent = '✓ Đã nhận thư';
       sender.appendChild(badge);
     }
   }
@@ -228,7 +228,7 @@
       if (foot) {
         const note = document.createElement('span');
         note.className = 'v3-compose-note';
-        note.textContent = 'Gửi an toàn qua Sky First Mail · Resend';
+        note.textContent = 'Sẵn sàng gửi thư';
         foot.prepend(note);
       }
       const ta = qs('textarea[name="text"]', m);
@@ -255,7 +255,7 @@
     a.dataset.v3 = '1';
     const trust = document.createElement('div');
     trust.className = 'v3-trust';
-    trust.innerHTML = '<span>● Gửi/nhận thật</span><span>● R2 Storage</span><span>● Resend Outbound</span>';
+    trust.innerHTML = '<span>● Gửi và nhận thư</span><span>● Đồng bộ dữ liệu</span><span>● Kết nối ổn định</span>';
     a.appendChild(trust);
   }
 
