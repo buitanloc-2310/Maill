@@ -6,9 +6,7 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": [
-      "/api/*"
-    ]
+    "run_worker_first": ["/api/*"]
   },
   "d1_databases": [
     {
@@ -25,8 +23,5 @@
   ],
   "observability": {
     "enabled": true
-  },
-  "compatibility_flags": [
-    "nodejs_compat"
-  ]
+  }
 }
