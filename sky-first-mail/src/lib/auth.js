@@ -23,7 +23,7 @@ export async function currentSession(request, env) {
   const row = await env.DB.prepare(`
     SELECT s.id session_id, s.expires_at session_expires_at, u.*
     FROM sessions s JOIN users u ON u.id=s.user_id
-    WHERE s.token_hash=? AND s.expires_at>CURRENT_TIMESTAMP AND u.status='active' LIMIT 1
+    WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now') AND u.status='active' LIMIT 1
   `).bind(tokenHash).first();
   if (row) {
     try { await env.DB.prepare(`UPDATE sessions SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?`).bind(row.session_id).run(); } catch {}

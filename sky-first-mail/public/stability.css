@@ -1,0 +1,5 @@
+/* Interaction and accessibility fixes; original visual theme remains in styles.css. */
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[contenteditable]:focus-visible{outline:3px solid #398beb;outline-offset:3px}
+button:disabled{cursor:wait}.modal-wrap{overscroll-behavior:contain}.modal{max-height:calc(100dvh - 32px);overflow-y:auto}.rowbody,.searchbox{min-width:0}.message h1{overflow-wrap:anywhere}.attachment{overflow-wrap:anywhere}.compose-foot{flex-wrap:wrap}.v5-editor,.v5-visual{overflow-wrap:anywhere}#rows>.secondary{display:block;margin:16px auto}
+@media(max-width:620px){.modal-wrap{padding:8px}.modal{max-width:100%;max-height:calc(100dvh - 16px)}.inline-field input,.inline-field select{min-width:0}.v5-studio-bar{flex-wrap:wrap}.compose-foot{gap:8px}.v5-shortcut{display:none}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}

@@ -10,7 +10,7 @@ export function json(data, status = 200, headers = {}) {
 }
 
 export async function bodyJson(request) {
-  try { return await request.json(); } catch { return {}; }
+  try {const value=await request.json();if(!value || typeof value!=='object' || Array.isArray(value))throw new Error();return value;}catch{throw Object.assign(new Error('Dữ liệu JSON không hợp lệ.'),{status:400});}
 }
 
 export function badRequest(message) { return json({ ok: false, error: message }, 400); }

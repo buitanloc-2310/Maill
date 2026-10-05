@@ -1,3 +1,4 @@
+import sanitizeHtml from 'sanitize-html';
 import PostalMime from 'postal-mime';
 
 export async function parseStoredMessage(env, storageKey) {
@@ -8,14 +9,13 @@ export async function parseStoredMessage(env, storageKey) {
 }
 
 export function cleanEmailHtml(html='') {
-  return String(html)
-    .replace(/<script[\s\S]*?<\/script>/gi,'')
-    .replace(/<iframe[\s\S]*?<\/iframe>/gi,'')
-    .replace(/<object[\s\S]*?<\/object>/gi,'')
-    .replace(/<embed[^>]*>/gi,'')
-    .replace(/<form[\s\S]*?<\/form>/gi,'')
-    .replace(/\son\w+\s*=\s*(['"]).*?\1/gi,'')
-    .replace(/javascript:/gi,'');
+ return sanitizeHtml(String(html),{
+  allowedTags: sanitizeHtml.defaults.allowedTags.concat(['img','font','center']),
+  allowedAttributes:{'*':['style','title','align','width','height','bgcolor','color'],a:['href','name','target','rel'],img:['src','alt','width','height'],table:['cellpadding','cellspacing','border','width'],td:['colspan','rowspan','width'],th:['colspan','rowspan'],font:['face','size','color']},
+  allowedSchemes:['https','http','mailto','cid'],allowProtocolRelative:false,
+  allowedStyles:{'*':{'color':[/^[#a-zA-Z0-9(),.%\s-]+$/],'background-color':[/^[#a-zA-Z0-9(),.%\s-]+$/],'font-family':[/^[a-zA-Z0-9 ,"'-]+$/],'font-size':[/^[\d.]+(?:px|pt|em|rem|%)$/],'font-weight':[/^(?:normal|bold|[1-9]00)$/],'font-style':[/^(?:normal|italic)$/],'text-align':[/^(?:left|right|center|justify)$/],'text-decoration':[/^(?:none|underline|line-through)$/],'line-height':[/^[\d.]+(?:px|em|%)?$/],'padding':[/^[\d. pxem%]+$/],'margin':[/^[\d. pxem%auto-]+$/],'border':[/^[\d. pxsolid#a-zA-Z0-9(),% -]+$/],'border-collapse':[/^(?:collapse|separate)$/],'width':[/^[\d.]+(?:px|em|%)$/],'max-width':[/^[\d.]+(?:px|em|%)$/],'height':[/^(?:auto|[\d.]+(?:px|em|%))$/]}},
+  transformTags:{a:(tag,attrs)=>({tagName:tag,attribs:{...attrs,rel:'noopener noreferrer',target:'_blank'}})}
+ });
 }
 
 function encHeader(s='') { return String(s).replace(/[\r\n]+/g,' ').trim(); }
@@ -63,12 +63,12 @@ export async function buildMime({from,to,cc=[],bcc=[],subject='',text='',html=''
     const ab=await a.arrayBuffer();
     const b64=toBase64(ab).replace(/(.{76})/g,'$1\r\n');
     const cid=encHeader(cidByName.get(String(a.name||''))||`sfm-inline-${crypto.randomUUID()}`);
-    lines.push(`--${mixed}`,`Content-Type: ${a.type||'application/octet-stream'}; name="${encHeader(a.name||'inline-image')}"`,`Content-Disposition: inline; filename="${encHeader(a.name||'inline-image')}"`,`Content-ID: <${cid}>`,'Content-Transfer-Encoding: base64','',b64,'');
+    lines.push(`--${mixed}`,`Content-Type: ${/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(a.type||'')?a.type:'application/octet-stream'}; name="${encHeader(a.name||'inline-image').replace(/["\\]/g,'_')}"`,`Content-Disposition: inline; filename="${encHeader(a.name||'inline-image').replace(/["\\]/g,'_')}"`,`Content-ID: <${cid}>`,'Content-Transfer-Encoding: base64','',b64,'');
   }
   for (const a of attachments) {
     const ab=await a.arrayBuffer();
     const b64=toBase64(ab).replace(/(.{76})/g,'$1\r\n');
-    lines.push(`--${mixed}`,`Content-Type: ${a.type||'application/octet-stream'}; name="${encHeader(a.name||'attachment')}"`,`Content-Disposition: attachment; filename="${encHeader(a.name||'attachment')}"`,'Content-Transfer-Encoding: base64','',b64,'');
+    lines.push(`--${mixed}`,`Content-Type: ${/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i.test(a.type||'')?a.type:'application/octet-stream'}; name="${encHeader(a.name||'attachment').replace(/["\\]/g,'_')}"`,`Content-Disposition: attachment; filename="${encHeader(a.name||'attachment').replace(/["\\]/g,'_')}"`,'Content-Transfer-Encoding: base64','',b64,'');
   }
   lines.push(`--${mixed}--`,'');
   return new TextEncoder().encode(lines.join('\r\n')).buffer;

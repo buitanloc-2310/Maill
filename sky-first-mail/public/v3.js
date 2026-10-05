@@ -24,7 +24,7 @@
   async function jfetch(url, opts = {}) {
     const r = await fetch(url, {
       ...opts,
-      headers: { 'content-type': 'application/json', ...(opts.headers || {}) }
+      headers: {'x-sfm-request':'1', 'content-type': 'application/json', ...(opts.headers || {}) }
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
