@@ -3,7 +3,7 @@ import { hashPassword, verifyPassword } from './lib/security.js';
 import { createSession, currentUser, destroySession, isAdmin } from './lib/auth.js';
 import { parseStoredMessage, cleanEmailHtml, buildMime } from './lib/mail.js';
 import { reliableCompose } from './lib/compose.js';
-import { RELIABILITY_SCHEMA } from './lib/reliability.js';
+import { RELIABILITY_STATEMENTS } from './lib/reliability.js';
 import { sendExternal } from './lib/transport.js';
 
 const FOLDERS=['inbox','sent','drafts','spam','trash'];
@@ -57,7 +57,7 @@ async function ensureSchema(env){
     INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('skyfirst.io.vn','configured',1,0);
     INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('nhahanngu.io.vn','configured',1,0);
   `);
-  await env.DB.exec(RELIABILITY_SCHEMA);
+  for(const statement of RELIABILITY_STATEMENTS) await env.DB.prepare(statement).run();
   for(const [table,column,def] of [
     ['users','avatar_key','TEXT'],['users','allow_name_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_password_change','INTEGER NOT NULL DEFAULT 1'],['users','last_login_at','TEXT'],['users','cover_key','TEXT'],['users','profile_status',"TEXT NOT NULL DEFAULT 'available'"],['users','allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_theme_change','INTEGER NOT NULL DEFAULT 1'],
     ['sessions','ip','TEXT'],['sessions','user_agent','TEXT'],['sessions','last_seen_at','TEXT'],
