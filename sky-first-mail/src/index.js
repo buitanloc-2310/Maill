@@ -2,6 +2,9 @@ import { json, bodyJson, badRequest, unauthorized, forbidden, notFound } from '.
 import { hashPassword, verifyPassword } from './lib/security.js';
 import { createSession, currentUser, destroySession, isAdmin } from './lib/auth.js';
 import { parseStoredMessage, cleanEmailHtml, buildMime } from './lib/mail.js';
+import { reliableCompose } from './lib/compose.js';
+import { RELIABILITY_SCHEMA } from './lib/reliability.js';
+import { sendExternal } from './lib/transport.js';
 
 const FOLDERS=['inbox','sent','drafts','spam','trash'];
 const ROLES=['user','admin','super_admin'];
@@ -54,18 +57,32 @@ async function ensureSchema(env){
     INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('skyfirst.io.vn','configured',1,0);
     INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('nhahanngu.io.vn','configured',1,0);
   `);
+  await env.DB.exec(RELIABILITY_SCHEMA);
   for(const [table,column,def] of [
     ['users','avatar_key','TEXT'],['users','allow_name_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_password_change','INTEGER NOT NULL DEFAULT 1'],['users','last_login_at','TEXT'],['users','cover_key','TEXT'],['users','profile_status',"TEXT NOT NULL DEFAULT 'available'"],['users','allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_theme_change','INTEGER NOT NULL DEFAULT 1'],
     ['sessions','ip','TEXT'],['sessions','user_agent','TEXT'],['sessions','last_seen_at','TEXT'],
-    ['messages','bcc_json','TEXT'],['compose_drafts','bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['compose_drafts','body_html','TEXT'],['compose_drafts','sender_address','TEXT'],['compose_drafts','reply_to_message_id','INTEGER']
+    ['messages','bcc_json','TEXT'],['compose_drafts','bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['compose_drafts','body_html','TEXT'],['compose_drafts','sender_address','TEXT'],['compose_drafts','reply_to_message_id','INTEGER'],
+    ['managed_domains','transport',"TEXT NOT NULL DEFAULT 'resend'"],['managed_domains','verification_token','TEXT'],['managed_domains','verified_at','TEXT'],['managed_domains','last_checked_at','TEXT'],['managed_domains','health_json','TEXT'],['managed_domains','inbound_adapter',"TEXT NOT NULL DEFAULT 'cloudflare_email_routing'"]
   ]) await ensureColumn(env,table,column,def);
-  if(env.RESEND_API_KEY){try{await env.DB.prepare(`UPDATE managed_domains SET send_enabled=1 WHERE status!='disabled'`).run()}catch{}}
+  // Domain send state is explicit; never auto-enable every domain because one provider secret exists.
   schemaReady=true;
 }
 
 async function audit(env,userId,action,targetType=null,targetId=null,metadata={}){
   try{await env.DB.prepare(`INSERT INTO audit_logs(user_id,action,target_type,target_id,metadata_json) VALUES(?,?,?,?,?)`).bind(userId||null,action,targetType,targetId==null?null:String(targetId),JSON.stringify(metadata||{})).run()}catch{}
 }
+async function dnsJson(name,type){
+  const r=await fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=${encodeURIComponent(type)}`,{headers:{accept:'application/dns-json'}});
+  if(!r.ok)throw new Error(`DNS lookup HTTP ${r.status}`);return r.json();
+}
+async function domainHealth(domain){
+  const [txt,mx]=await Promise.all([dnsJson(`_skyfirst-mail.${domain.domain}`,'TXT'),dnsJson(domain.domain,'MX')]);
+  const token=`skyfirst-mail-verification=${domain.verification_token||''}`;
+  const txtValues=(txt.Answer||[]).map(x=>String(x.data||'').replace(/^"|"$/g,''));
+  const mxValues=(mx.Answer||[]).map(x=>String(x.data||''));
+  return {ownership:!!domain.verification_token&&txtValues.some(x=>x.includes(token)),mx:mxValues.length>0,txt:txtValues,mxRecords:mxValues,checkedAt:new Date().toISOString()};
+}
+
 async function notify(env,userId,title,body='',type='system'){
   try{await env.DB.prepare(`INSERT INTO notifications(user_id,type,title,body) VALUES(?,?,?,?)`).bind(userId,type,title,body).run()}catch{}
 }
@@ -324,17 +341,12 @@ async function routeApi(request,env){
   if(path==='/api/rules'&&request.method==='POST'){const b=await bodyJson(request),name=String(b.name||'Quy tắc').trim().slice(0,80),folder=FOLDERS.includes(b.actionFolder)?b.actionFolder:null;const r=await env.DB.prepare(`INSERT INTO mail_rules(user_id,mailbox_id,name,sender_contains,subject_contains,action_folder,action_star,is_active) VALUES(?,?,?,?,?,?,?,1)`).bind(user.id,b.mailboxId?Number(b.mailboxId):null,name,String(b.senderContains||'').trim()||null,String(b.subjectContains||'').trim()||null,folder,boolInt(b.actionStar)).run();return json({ok:true,id:r.meta.last_row_id})}
 
   if(path==='/api/compose'&&request.method==='POST'){
-    const form=await request.formData();const fromMailboxId=Number(form.get('mailboxId')||0),senderAddress=normalizeEmail(form.get('senderAddress')||''),fromMb=await resolveSenderIdentity(env,user.id,fromMailboxId,senderAddress);if(!fromMb)return badRequest('Địa chỉ gửi không hợp lệ hoặc bạn không có quyền sử dụng.');
-    const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),bcc=String(form.get('bcc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),html=cleanEmailHtml(String(form.get('html')||'')).slice(0,500000),text=String(form.get('text')||'').slice(0,500000),replyTo=normalizeEmail(form.get('replyTo')||''),priority=String(form.get('priority')||'normal').toLowerCase();if(!to.length||[...to,...cc,...bcc].some(x=>!validEmail(x)))return badRequest('Địa chỉ người nhận không hợp lệ.');if(replyTo&&!validEmail(replyTo))return badRequest('Địa chỉ Reply-To không hợp lệ.');
-    const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function');const inlineAttachments=form.getAll('inlineAttachments').filter(x=>x&&typeof x.arrayBuffer==='function');let inlineCidMap=[];try{inlineCidMap=JSON.parse(String(form.get('inlineCidMap')||'[]'))}catch{}let total=0;for(const a of [...attachments,...inlineAttachments])total+=a.size||0;if(total>12*1024*1024)return badRequest('Tổng tệp và ảnh nội tuyến tối đa 12 MB.');
-    let inReplyTo=null,references=[];const replyToMessageId=Number(form.get('replyToMessageId')||0);if(replyToMessageId){const original=await ownsMessage(env,user.id,replyToMessageId);if(original){inReplyTo=original.message_id_header||null;references=inReplyTo?[inReplyTo]:[]}}
-    const messageDomain=(fromMb.sender_address.split('@')[1]||'skyfirst.io.vn').toLowerCase();const generatedMessageId=`<${crypto.randomUUID()}@${messageDomain}>`,groups={to:[],cc:[],bcc:[]};for(const [kind,list] of Object.entries({to,cc,bcc}))for(const addr of list){const mb=await resolveMailbox(env,addr);groups[kind].push({addr,mb})}const external=kind=>groups[kind].filter(x=>!x.mb).map(x=>x.addr);
-    let resendId=null;if(external('to').length||external('cc').length||external('bcc').length){const outboundDomain=fromMb.sender_address.split('@')[1]||'';const outboundAllowed=await env.DB.prepare(`SELECT send_enabled FROM managed_domains WHERE lower(domain)=lower(?) LIMIT 1`).bind(outboundDomain).first();if(!outboundAllowed?.send_enabled)return badRequest('Tên miền gửi này chưa được bật gửi thư trong Quản trị > Tên miền.');try{const headers={};if(inReplyTo){headers['In-Reply-To']=inReplyTo;headers['References']=references.join(' ')}if(priority==='high'){headers['X-Priority']='1';headers['Importance']='high'}else if(priority==='low'){headers['X-Priority']='5';headers['Importance']='low'}const r=await sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:user.display_name||fromMb.display_name,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html,text,attachments,headers,replyTo});resendId=r?.id||null}catch(e){console.error('OUTBOUND_SEND_FAILED',{from:fromMb.sender_address,to:external('to'),cc:external('cc'),bccCount:external('bcc').length,message:e?.message||String(e)});return json({ok:false,error:`Không gửi được email ra ngoài. ${e?.message||e}`},502)}}
-    const raw=await buildMime({from:fromMb.sender_address,to,cc,bcc,subject,text,html,attachments,inlineAttachments,inlineCidMap,messageId:generatedMessageId,inReplyTo,references,replyTo,priority});const baseKey=`messages/outbound/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(baseKey,raw,{httpMetadata:{contentType:'message/rfc822'},customMetadata:{provider:resendId?'resend':'internal',resendId:resendId||''}});const now=new Date().toISOString(),preview=(text||html.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ')).slice(0,180);
-    const sent=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,bcc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header,thread_key) VALUES(?,'outbound','sent',?,?,?,?,?,?,?,?,1,'sent',?,?,?,?)`).bind(fromMb.id,fromMb.sender_address,JSON.stringify(to),JSON.stringify(cc),JSON.stringify(bcc),subject,preview,baseKey,raw.byteLength,now,now,generatedMessageId,inReplyTo||generatedMessageId).run();
-    if(resendId)try{await env.DB.prepare(`INSERT INTO delivery_events(message_id,provider,provider_message_id,event_type,detail_json) VALUES(?,'resend',?,'accepted',?)`).bind(sent.meta.last_row_id,resendId,JSON.stringify({to:external('to'),cc:external('cc'),bccCount:external('bcc').length})).run()}catch{}
-    const delivered=new Set();for(const {addr,mb} of [...groups.to,...groups.cc,...groups.bcc].filter(x=>x.mb)){if(delivered.has(mb.id))continue;delivered.add(mb.id);await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,bcc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header,thread_key) VALUES(?,'inbound','inbox',?,?,?,?,?,?,?,?,0,'received',?,?,?,?)`).bind(mb.id,fromMb.sender_address,JSON.stringify([addr]),JSON.stringify(cc),JSON.stringify([]),subject,preview,baseKey,raw.byteLength,now,now,generatedMessageId,inReplyTo||generatedMessageId).run();await notify(env,mb.user_id,`Thư mới từ ${user.display_name||fromMb.sender_address}`,subject||'(Không có tiêu đề)','mail')}
-    await audit(env,user.id,resendId?'mail.external.sent':'mail.internal.sent','message',sent.meta.last_row_id,{from:fromMb.sender_address,to,cc,bccCount:bcc.length,resendId,replyToMessageId:replyToMessageId||null});return json({ok:true,internal:!resendId,external:!!resendId,resendId,messageId:sent.meta.last_row_id})
+    return reliableCompose(request,env,user,{resolveSenderIdentity,resolveMailbox,ownsMessage,notify,audit,sendWithResend:async(_env,payload)=>{
+      const domainName=(payload.fromAddress.split('@')[1]||'').toLowerCase();
+      const domain=await env.DB.prepare(`SELECT * FROM managed_domains WHERE lower(domain)=lower(?) LIMIT 1`).bind(domainName).first();
+      if(!domain?.send_enabled||domain.status==='disabled')throw Object.assign(new Error('Tên miền gửi chưa được bật.'),{definitive:true});
+      return sendExternal(env,domain,payload);
+    }});
   }
 
 
@@ -455,10 +467,17 @@ async function routeApi(request,env){
     if(path==='/api/admin/domains'&&request.method==='POST'){
       const b=await bodyJson(request),domain=String(b.domain||'').trim().toLowerCase().replace(/^@/,'');
       if(!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain))return badRequest('Tên miền không hợp lệ.');
-      try{const r=await env.DB.prepare(`INSERT INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES(?,?,?,?)`).bind(domain,'configured',boolInt(b.receiveEnabled??true),boolInt(b.sendEnabled??!!env.RESEND_API_KEY)).run();await audit(env,user.id,'admin.domain.created','domain',r.meta.last_row_id,{domain});return json({ok:true,id:r.meta.last_row_id})}catch{return badRequest('Tên miền này đã được thêm.')}
+      try{const token=crypto.randomUUID().replaceAll('-','');const transport=['resend','gateway'].includes(String(b.transport||''))?String(b.transport):'resend';const r=await env.DB.prepare(`INSERT INTO managed_domains(domain,status,receive_enabled,send_enabled,transport,verification_token) VALUES(?,?,?,?,?,?)`).bind(domain,'pending_verification',boolInt(b.receiveEnabled??true),0,transport,token).run();await audit(env,user.id,'admin.domain.created','domain',r.meta.last_row_id,{domain,transport});return json({ok:true,id:r.meta.last_row_id,domain,verification:{type:'TXT',name:`_skyfirst-mail.${domain}`,value:`skyfirst-mail-verification=${token}`}})}catch{return badRequest('Tên miền này đã được thêm.')}
+    }
+    const adv=path.match(/^\/api\/admin\/domains\/(\d+)\/verify$/);if(adv&&request.method==='POST'){
+      const id=Number(adv[1]),domain=await env.DB.prepare(`SELECT * FROM managed_domains WHERE id=?`).bind(id).first();if(!domain)return notFound();
+      try{const health=await domainHealth(domain);const verified=health.ownership;await env.DB.prepare(`UPDATE managed_domains SET status=?,verified_at=CASE WHEN ? THEN COALESCE(verified_at,CURRENT_TIMESTAMP) ELSE verified_at END,last_checked_at=CURRENT_TIMESTAMP,health_json=? WHERE id=?`).bind(verified?'verified':'pending_verification',verified?1:0,JSON.stringify(health),id).run();await audit(env,user.id,'admin.domain.verified','domain',id,{verified,health});return json({ok:true,verified,health,requiredRecord:{type:'TXT',name:`_skyfirst-mail.${domain.domain}`,value:`skyfirst-mail-verification=${domain.verification_token}`}})}catch(e){return json({ok:false,error:'Không kiểm tra được DNS lúc này.',detail:String(e?.message||e)},502)}
+    }
+    const adh=path.match(/^\/api\/admin\/domains\/(\d+)\/health$/);if(adh&&request.method==='GET'){
+      const id=Number(adh[1]),domain=await env.DB.prepare(`SELECT * FROM managed_domains WHERE id=?`).bind(id).first();if(!domain)return notFound();const health=await domainHealth(domain);await env.DB.prepare(`UPDATE managed_domains SET last_checked_at=CURRENT_TIMESTAMP,health_json=? WHERE id=?`).bind(JSON.stringify(health),id).run();return json({ok:true,domain:domain.domain,status:domain.status,transport:domain.transport,inboundAdapter:domain.inbound_adapter,health});
     }
     const adm=path.match(/^\/api\/admin\/domains\/(\d+)$/);if(adm&&request.method==='PATCH'){
-      const id=Number(adm[1]),b=await bodyJson(request),f=[],v=[];if('receiveEnabled' in b){f.push('receive_enabled=?');v.push(boolInt(b.receiveEnabled))}if('sendEnabled' in b){f.push('send_enabled=?');v.push(boolInt(b.sendEnabled))}if(!f.length)return badRequest('Không có thay đổi.');await env.DB.prepare(`UPDATE managed_domains SET ${f.join(',')} WHERE id=?`).bind(...v,id).run();await audit(env,user.id,'admin.domain.updated','domain',id,b);return json({ok:true})
+      const id=Number(adm[1]),b=await bodyJson(request),f=[],v=[];if('receiveEnabled' in b){f.push('receive_enabled=?');v.push(boolInt(b.receiveEnabled))}if('sendEnabled' in b){const d=await env.DB.prepare(`SELECT status FROM managed_domains WHERE id=?`).bind(id).first();if(b.sendEnabled&&d?.status!=='verified')return badRequest('Phải xác minh quyền sở hữu tên miền trước khi bật gửi.');f.push('send_enabled=?');v.push(boolInt(b.sendEnabled))}if('transport' in b){const t=String(b.transport);if(!['resend','gateway'].includes(t))return badRequest('Transport không hợp lệ.');f.push('transport=?');v.push(t)}if(!f.length)return badRequest('Không có thay đổi.');await env.DB.prepare(`UPDATE managed_domains SET ${f.join(',')} WHERE id=?`).bind(...v,id).run();await audit(env,user.id,'admin.domain.updated','domain',id,b);return json({ok:true})
     }
     if(path==='/api/admin/audit'&&request.method==='GET'){const r=await env.DB.prepare(`SELECT a.*,u.email user_email,u.display_name user_name FROM audit_logs a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 200`).all();return json({ok:true,logs:r.results||[]})}
   }
