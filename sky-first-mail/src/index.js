@@ -3,10 +3,10 @@ import { hashPassword, verifyPassword } from './lib/security.js';
 import { createSession, currentUser, destroySession, isAdmin } from './lib/auth.js';
 import { parseStoredMessage, cleanEmailHtml, buildMime } from './lib/mail.js';
 import { reliableCompose } from './lib/compose.js';
-import { RELIABILITY_STATEMENTS } from './lib/reliability.js';
+import { RELIABILITY_STATEMENTS, digest } from './lib/reliability.js';
 import { sendExternal } from './lib/transport.js';
 
-const FOLDERS=['inbox','sent','drafts','spam','trash'];
+const FOLDERS=['inbox','sent','drafts','spam','trash','archive'];
 const ROLES=['user','admin','super_admin'];
 const normalizeEmail=v=>String(v||'').trim().toLowerCase();
 const validEmail=v=>/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v||'');
@@ -25,7 +25,7 @@ async function ensureSchema(env){
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE COLLATE NOCASE,display_name TEXT NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,password_iterations INTEGER NOT NULL DEFAULT 100000,role TEXT NOT NULL DEFAULT 'user',status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
     CREATE TABLE IF NOT EXISTS mailboxes (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,address TEXT NOT NULL UNIQUE COLLATE NOCASE,display_name TEXT,is_primary INTEGER NOT NULL DEFAULT 1,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER,direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),folder TEXT NOT NULL DEFAULT 'inbox',message_id_header TEXT,thread_key TEXT,sender TEXT NOT NULL,recipients_json TEXT NOT NULL,cc_json TEXT,bcc_json TEXT,subject TEXT,preview TEXT,storage_key TEXT NOT NULL,raw_size INTEGER NOT NULL DEFAULT 0,is_read INTEGER NOT NULL DEFAULT 0,is_starred INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'received',sent_at TEXT,received_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE SET NULL);
+    CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER,direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),folder TEXT NOT NULL DEFAULT 'inbox',message_id_header TEXT,thread_key TEXT,sender TEXT NOT NULL,recipients_json TEXT NOT NULL,cc_json TEXT,bcc_json TEXT,subject TEXT,preview TEXT,storage_key TEXT NOT NULL,raw_size INTEGER NOT NULL DEFAULT 0,is_read INTEGER NOT NULL DEFAULT 0,is_starred INTEGER NOT NULL DEFAULT 0,is_important INTEGER NOT NULL DEFAULT 0,snoozed_until TEXT,content_sha256 TEXT,hash_recorded_at TEXT,status TEXT NOT NULL DEFAULT 'received',sent_at TEXT,received_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE SET NULL);
     CREATE TABLE IF NOT EXISTS attachments (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL,filename TEXT NOT NULL,content_type TEXT,size INTEGER NOT NULL DEFAULT 0,storage_key TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY,value_json TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -61,7 +61,7 @@ async function ensureSchema(env){
   for(const [table,column,def] of [
     ['users','avatar_key','TEXT'],['users','allow_name_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_password_change','INTEGER NOT NULL DEFAULT 1'],['users','last_login_at','TEXT'],['users','cover_key','TEXT'],['users','profile_status',"TEXT NOT NULL DEFAULT 'available'"],['users','allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_theme_change','INTEGER NOT NULL DEFAULT 1'],
     ['sessions','ip','TEXT'],['sessions','user_agent','TEXT'],['sessions','last_seen_at','TEXT'],
-    ['messages','bcc_json','TEXT'],['compose_drafts','bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['compose_drafts','body_html','TEXT'],['compose_drafts','sender_address','TEXT'],['compose_drafts','reply_to_message_id','INTEGER'],
+    ['messages','bcc_json','TEXT'],['messages','is_important','INTEGER NOT NULL DEFAULT 0'],['messages','snoozed_until','TEXT'],['messages','content_sha256','TEXT'],['messages','hash_recorded_at','TEXT'],['compose_drafts','bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['compose_drafts','body_html','TEXT'],['compose_drafts','sender_address','TEXT'],['compose_drafts','reply_to_message_id','INTEGER'],
     ['managed_domains','transport',"TEXT NOT NULL DEFAULT 'resend'"],['managed_domains','verification_token','TEXT'],['managed_domains','verified_at','TEXT'],['managed_domains','last_checked_at','TEXT'],['managed_domains','health_json','TEXT'],['managed_domains','inbound_adapter',"TEXT NOT NULL DEFAULT 'cloudflare_email_routing'"]
   ]) await ensureColumn(env,table,column,def);
   // Domain send state is explicit; never auto-enable every domain because one provider secret exists.
@@ -124,36 +124,27 @@ function bytesToBase64(buffer){
   for(let i=0;i<bytes.length;i+=chunk) binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
   return btoa(binary);
 }
-async function sendWithResend(env,{fromAddress,fromName,to,cc,bcc,subject,html,text,attachments,headers,replyTo}){
+async function sendWithResend(env,{fromAddress,fromName,to,cc,bcc,subject,html,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey}){
   if(!env.RESEND_API_KEY) throw new Error('RESEND_API_KEY chưa được cấu hình trong Worker Secrets.');
   const files=[];
-  for(const a of attachments||[]){
-    const ab=await a.arrayBuffer();
-    files.push({filename:a.name||'attachment',content:bytesToBase64(ab),content_type:a.type||'application/octet-stream'});
+  const inlineFiles=new Set(inlineAttachments||[]);
+  for(const a of [...(attachments||[]),...(inlineAttachments||[])]){
+    const ab=await a.arrayBuffer(),item={filename:a.name||'attachment',content:bytesToBase64(ab),content_type:a.type||'application/octet-stream'};
+    if(inlineFiles.has(a)){const found=(inlineCidMap||[]).find(x=>x.name===a.name);if(found?.cid)item.content_id=found.cid;}
+    files.push(item);
   }
   const payload={
     from: fromName?`${String(fromName).replace(/[<>\r\n]/g,' ').trim()} <${fromAddress}>`:fromAddress,
-    to,
-    subject: subject||'(Không có tiêu đề)',
-    html: html||undefined,
-    text: text||undefined,
-    attachments: files.length?files:undefined,
-    headers: headers&&Object.keys(headers).length?headers:undefined
+    to,subject:subject||'(Không có tiêu đề)',html:html||undefined,text:text||undefined,
+    attachments:files.length?files:undefined,headers:headers&&Object.keys(headers).length?headers:undefined
   };
-  if(cc?.length) payload.cc=cc;
-  if(bcc?.length) payload.bcc=bcc;
-  if(replyTo) payload.reply_to=replyTo;
-  const res=await fetch('https://api.resend.com/emails',{
-    method:'POST',
-    headers:{'Authorization':`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'},
-    body:JSON.stringify(payload)
-  });
-  let data={}; try{data=await res.json()}catch{}
-  if(!res.ok){
-    const msg=data?.message||data?.error||`HTTP ${res.status}`;
-    throw new Error(`Resend: ${msg}`);
-  }
-  return data;
+  if(cc?.length)payload.cc=cc;if(bcc?.length)payload.bcc=bcc;if(replyTo)payload.reply_to=replyTo;
+  const requestHeaders={'Authorization':`Bearer ${env.RESEND_API_KEY}`,'Content-Type':'application/json'};
+  if(idempotencyKey)requestHeaders['Idempotency-Key']=String(idempotencyKey);
+  const res=await fetch('https://api.resend.com/emails',{method:'POST',headers:requestHeaders,body:JSON.stringify(payload)});
+  let data={};try{data=await res.json()}catch{}
+  if(!res.ok){const msg=data?.message||data?.error||`HTTP ${res.status}`;throw Object.assign(new Error(`Resend: ${msg}`),{definitive:res.status>=400&&res.status<500});}
+  return {id:data.id,provider:'resend'};
 }
 
 async function routeApi(request,env){
@@ -234,14 +225,15 @@ async function routeApi(request,env){
   }
 
   if(path==='/api/mailbox/summary'&&request.method==='GET'){
-    const rows=await env.DB.prepare(`SELECT m.folder,m.is_starred,m.is_read,count(*) n FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? GROUP BY m.folder,m.is_starred,m.is_read`).bind(user.id).all();
-    const counts={inbox:0,sent:0,drafts:0,spam:0,trash:0,starred:0};let unread=0;
+    const rows=await env.DB.prepare(`SELECT m.folder,m.is_starred,m.is_read,count(*) n FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? AND (m.snoozed_until IS NULL OR datetime(m.snoozed_until)<=datetime('now')) GROUP BY m.folder,m.is_starred,m.is_read`).bind(user.id).all();
+    const counts={inbox:0,sent:0,drafts:0,spam:0,trash:0,archive:0,starred:0};let unread=0;
     for(const r of rows.results||[]){if(r.folder in counts)counts[r.folder]+=Number(r.n||0);if(r.is_starred&&r.folder!=='trash')counts.starred+=Number(r.n||0);if(r.folder==='inbox'&&!r.is_read)unread+=Number(r.n||0)}
+    const snoozed=await env.DB.prepare(`SELECT count(*) n FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? AND m.snoozed_until IS NOT NULL AND datetime(m.snoozed_until)>datetime('now')`).bind(user.id).first();counts.snoozed=Number(snoozed?.n||0);
     return json({ok:true,counts,unread});
   }
   if(path==='/api/messages/bulk'&&request.method==='POST'){
     const b=await bodyJson(request),ids=[...new Set((Array.isArray(b.ids)?b.ids:[]).map(Number).filter(Number.isInteger))].slice(0,200),action=String(b.action||'');
-    if(!ids.length)return badRequest('Chưa chọn thư.');if(!['read','unread','star','unstar','spam','trash','inbox'].includes(action))return badRequest('Thao tác không hợp lệ.');
+    if(!ids.length)return badRequest('Chưa chọn thư.');if(!['read','unread','star','unstar','spam','trash','inbox','archive'].includes(action))return badRequest('Thao tác không hợp lệ.');
     const qs=ids.map(()=>'?').join(',');const owned=await env.DB.prepare(`SELECT m.id FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE mb.user_id=? AND m.id IN (${qs})`).bind(user.id,...ids).all();
     const ok=(owned.results||[]).map(x=>Number(x.id));if(!ok.length)return badRequest('Không có thư hợp lệ.');const q2=ok.map(()=>'?').join(',');
     if(action==='read'||action==='unread')await env.DB.prepare(`UPDATE messages SET is_read=? WHERE id IN (${q2})`).bind(action==='read'?1:0,...ok).run();
@@ -253,12 +245,30 @@ async function routeApi(request,env){
   if(path==='/api/messages'&&request.method==='GET'){
     const folder=String(url.searchParams.get('folder')||'inbox'), mailboxId=Number(url.searchParams.get('mailboxId')||0), q=String(url.searchParams.get('q')||'').trim(), limit=Math.min(100,Math.max(1,Number(url.searchParams.get('limit')||50)));
     let where=`mb.user_id=?`, binds=[user.id];
-    if(folder==='starred')where+=` AND m.is_starred=1 AND m.folder!='trash'`; else{where+=` AND m.folder=?`;binds.push(FOLDERS.includes(folder)?folder:'inbox')}
+    if(folder==='starred')where+=` AND m.is_starred=1 AND m.folder!='trash' AND (m.snoozed_until IS NULL OR datetime(m.snoozed_until)<=datetime('now'))`;
+    else if(folder==='snoozed')where+=` AND m.snoozed_until IS NOT NULL AND datetime(m.snoozed_until)>datetime('now')`;
+    else{where+=` AND m.folder=?`;binds.push(FOLDERS.includes(folder)?folder:'inbox');if((FOLDERS.includes(folder)?folder:'inbox')==='inbox')where+=` AND (m.snoozed_until IS NULL OR datetime(m.snoozed_until)<=datetime('now'))`}
     if(mailboxId){where+=` AND m.mailbox_id=?`;binds.push(mailboxId)}
     if(q){where+=` AND (lower(m.sender) LIKE lower(?) OR lower(COALESCE(m.subject,'')) LIKE lower(?) OR lower(COALESCE(m.preview,'')) LIKE lower(?) OR lower(COALESCE(m.recipients_json,'')) LIKE lower(?))`;const like=`%${q}%`;binds.push(like,like,like,like)}
-    const r=await env.DB.prepare(`SELECT m.id,m.mailbox_id,m.direction,m.folder,m.sender,m.recipients_json,m.subject,m.preview,m.raw_size,m.is_read,m.is_starred,m.status,m.sent_at,m.received_at,m.created_at FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE ${where} ORDER BY COALESCE(m.received_at,m.sent_at,m.created_at) DESC LIMIT ?`).bind(...binds,limit).all();
-    return json({ok:true,messages:r.results||[]})
+    const beforeId=Number(url.searchParams.get('before')||0);if(Number.isSafeInteger(beforeId)&&beforeId>0){where+=` AND m.id<?`;binds.push(beforeId)}
+    const r=await env.DB.prepare(`SELECT m.id,m.mailbox_id,m.direction,m.folder,m.sender,m.recipients_json,m.subject,m.preview,m.raw_size,m.is_read,m.is_starred,m.is_important,m.snoozed_until,m.status,m.sent_at,m.received_at,m.created_at FROM messages m JOIN mailboxes mb ON mb.id=m.mailbox_id WHERE ${where} ORDER BY m.id DESC LIMIT ?`).bind(...binds,limit+1).all();
+    const rows=r.results||[],hasMore=rows.length>limit,messages=rows.slice(0,limit);return json({ok:true,messages,hasMore,nextCursor:hasMore?String(messages[messages.length-1]?.id||''):null})
   }
+  const prooflineMatch=path.match(/^\/api\/messages\/(\d+)\/proofline$/);
+  if(prooflineMatch&&request.method==='GET'){
+    const row=await ownsMessage(env,user.id,Number(prooflineMatch[1]));if(!row)return notFound('Không tìm thấy thư.');
+    const object=await env.MAIL_STORAGE.get(row.storage_key);if(!object)return notFound('Không thể truy xuất MIME gốc của thư.');
+    const raw=new Uint8Array(await object.arrayBuffer()),currentHash=await digest(raw);let baselineHash=row.content_sha256||null,baselineAt=row.hash_recorded_at||null;
+    const historicalBaseline=!!baselineHash;
+    if(!baselineHash){baselineHash=currentHash;baselineAt=new Date().toISOString();await env.DB.prepare(`UPDATE messages SET content_sha256=?,hash_recorded_at=CURRENT_TIMESTAMP WHERE id=? AND (content_sha256 IS NULL OR content_sha256='')`).bind(baselineHash,row.id).run();}
+    const integrityMatches=historicalBaseline?baselineHash===currentHash:null;
+    const op=await env.DB.prepare(`SELECT id,status,provider_id,created_at,updated_at FROM send_operations WHERE storage_key=? LIMIT 1`).bind(row.storage_key).first().catch(()=>null);
+    let events=[];if(op){const ev=await env.DB.prepare(`SELECT provider,provider_message_id,event_type,detail_json,created_at FROM delivery_events WHERE json_extract(detail_json,'$.operationId')=? ORDER BY created_at ASC`).bind(op.id).all().catch(()=>({results:[]}));events=ev.results||[];}
+    const result={ok:true,version:'Sky Proofline 1.0',message:{id:row.id,direction:row.direction,messageId:row.message_id_header||null,sender:row.sender,recipients:parseJson(row.recipients_json),subject:row.subject||'',folder:row.folder,status:row.status,rawSize:raw.byteLength,createdAt:row.created_at,sentAt:row.sent_at||null,receivedAt:row.received_at||null},integrity:{algorithm:'SHA-256',baselineHash,currentHash,matches:integrityMatches,baselineSource:historicalBaseline?'captured_when_message_was_saved':'captured_on_first_proofline_review; historical integrity cannot be established',baselineRecordedAt:baselineAt},delivery:{operationId:op?.id||null,operationStatus:op?.status||row.status,providerMessageId:op?.provider_id||null,events}};
+    await audit(env,user.id,integrityMatches===false?'proofline.integrity.mismatch':'proofline.reviewed','message',row.id,{matches:integrityMatches,hash:currentHash});
+    return json(result);
+  }
+
   const mm=path.match(/^\/api\/messages\/(\d+)$/);
   if(mm&&request.method==='GET'){
     const row=await ownsMessage(env,user.id,Number(mm[1]));if(!row)return notFound('Không tìm thấy thư.');const p=await parseStoredMessage(env,row.storage_key);if(!p)return notFound('Không thể tải nội dung thư. Vui lòng thử lại.');
@@ -268,7 +278,7 @@ async function routeApi(request,env){
   }
   if(mm&&request.method==='PATCH'){
     const id=Number(mm[1]),row=await ownsMessage(env,user.id,id);if(!row)return notFound();const b=await bodyJson(request),f=[],v=[];
-    if('isRead'in b){f.push('is_read=?');v.push(boolInt(b.isRead))} if('isStarred'in b){f.push('is_starred=?');v.push(boolInt(b.isStarred))} if(b.folder&&FOLDERS.includes(b.folder)){f.push('folder=?');v.push(b.folder)}
+    if('isRead'in b){f.push('is_read=?');v.push(boolInt(b.isRead))} if('isStarred'in b){f.push('is_starred=?');v.push(boolInt(b.isStarred))} if('isImportant'in b){f.push('is_important=?');v.push(boolInt(b.isImportant))} if('snoozedUntil'in b){if(b.snoozedUntil!==null&&(!Number.isFinite(Date.parse(b.snoozedUntil))||Date.parse(b.snoozedUntil)<=Date.now()))return badRequest('Thời gian hoãn thư phải nằm trong tương lai.');f.push('snoozed_until=?');v.push(b.snoozedUntil===null?null:new Date(b.snoozedUntil).toISOString())} if(b.folder&&FOLDERS.includes(b.folder)){f.push('folder=?');v.push(b.folder)}
     if(!f.length)return badRequest('Không có thay đổi.');await env.DB.prepare(`UPDATE messages SET ${f.join(',')} WHERE id=?`).bind(...v,id).run();return json({ok:true})
   }
   const am=path.match(/^\/api\/messages\/(\d+)\/attachments\/(\d+)$/);
@@ -308,8 +318,8 @@ async function routeApi(request,env){
     if(!isAdmin(user))return forbidden('Bạn không có quyền truy cập Danh bạ.');
     const q=String(url.searchParams.get('q')||'').trim(),like=`%${q}%`;const r=await env.DB.prepare(`SELECT id,email,display_name,role,avatar_key,profile_status FROM users WHERE status='active' AND (?='' OR lower(email) LIKE lower(?) OR lower(display_name) LIKE lower(?)) ORDER BY display_name LIMIT 100`).bind(q,like,like).all();return json({ok:true,people:r.results||[]})
   }
-  if(path==='/api/contacts'&&request.method==='GET'){if(!isAdmin(user))return forbidden('Bạn không có quyền truy cập Danh bạ.');const r=await env.DB.prepare(`SELECT * FROM contacts WHERE owner_user_id=? ORDER BY display_name,email`).bind(user.id).all();return json({ok:true,contacts:r.results||[]})}
-  if(path==='/api/contacts'&&request.method==='POST'){if(!isAdmin(user))return forbidden('Bạn không có quyền thay đổi Danh bạ.');const b=await bodyJson(request),email=normalizeEmail(b.email),name=String(b.displayName||'').trim();if(!validEmail(email))return badRequest('Email không hợp lệ.');await env.DB.prepare(`INSERT INTO contacts(owner_user_id,email,display_name,notes) VALUES(?,?,?,?) ON CONFLICT(owner_user_id,email) DO UPDATE SET display_name=excluded.display_name,notes=excluded.notes,updated_at=CURRENT_TIMESTAMP`).bind(user.id,email,name,String(b.notes||'')).run();return json({ok:true})}
+  if(path==='/api/contacts'&&request.method==='GET'){const r=await env.DB.prepare(`SELECT * FROM contacts WHERE owner_user_id=? ORDER BY display_name,email`).bind(user.id).all();return json({ok:true,contacts:r.results||[]})}
+  if(path==='/api/contacts'&&request.method==='POST'){const b=await bodyJson(request),email=normalizeEmail(b.email),name=String(b.displayName||'').trim();if(!validEmail(email))return badRequest('Email không hợp lệ.');await env.DB.prepare(`INSERT INTO contacts(owner_user_id,email,display_name,notes) VALUES(?,?,?,?) ON CONFLICT(owner_user_id,email) DO UPDATE SET display_name=excluded.display_name,notes=excluded.notes,updated_at=CURRENT_TIMESTAMP`).bind(user.id,email,name,String(b.notes||'')).run();return json({ok:true})}
 
   if(path==='/api/notifications'&&request.method==='GET'){const r=await env.DB.prepare(`SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 50`).bind(user.id).all();return json({ok:true,notifications:r.results||[]})}
   const nm=path.match(/^\/api\/notifications\/(\d+)\/read$/);if(nm&&request.method==='POST'){await env.DB.prepare(`UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?`).bind(Number(nm[1]),user.id).run();return json({ok:true})}
@@ -396,15 +406,19 @@ async function routeApi(request,env){
   if(path==='/api/drafts'&&request.method==='POST'){
     const form=await request.formData();const id=Number(form.get('draftId')||0),mailboxId=Number(form.get('mailboxId')||0),mb=await ownsMailbox(env,user.id,mailboxId);if(!mb)return badRequest('Mailbox không hợp lệ.');
     const to=String(form.get('to')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),cc=String(form.get('cc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),bcc=String(form.get('bcc')||'').split(/[;,]/).map(normalizeEmail).filter(Boolean),subject=String(form.get('subject')||'').slice(0,998),text=String(form.get('text')||'').slice(0,500000),html=cleanEmailHtml(String(form.get('html')||'')).slice(0,500000),senderAddress=normalizeEmail(form.get('senderAddress')||mb.address),replyToMessageId=Number(form.get('replyToMessageId')||0)||null;
-    const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function');let total=0;for(const a of attachments)total+=a.size||0;if(total>8*1024*1024)return badRequest('Tổng tệp đính kèm tối đa 8 MB.');
-    let storageKey=null,names=attachments.map(a=>String(a.name||'attachment').slice(0,180));
-    if(attachments.length){const raw=await buildMime({from:senderAddress||mb.address,to:to.length?to:[mb.address],cc,bcc,subject,text,html,attachments});storageKey=`drafts/${user.id}/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(storageKey,raw,{httpMetadata:{contentType:'message/rfc822'}})}
-    if(id){const old=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(id,user.id).first();if(!old)return notFound('Không tìm thấy bản nháp.');await env.DB.prepare(`UPDATE compose_drafts SET mailbox_id=?,to_json=?,cc_json=?,bcc_json=?,subject=?,body_text=?,body_html=?,sender_address=?,reply_to_message_id=?,storage_key=COALESCE(?,storage_key),attachment_names_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`).bind(mailboxId,JSON.stringify(to),JSON.stringify(cc),JSON.stringify(bcc),subject,text,html,senderAddress,replyToMessageId,storageKey,JSON.stringify(names),id,user.id).run();if(storageKey&&old.storage_key&&old.storage_key!==storageKey){try{await env.MAIL_STORAGE.delete(old.storage_key)}catch{}}return json({ok:true,id})}
+    const attachments=form.getAll('attachments').filter(x=>x&&typeof x.arrayBuffer==='function'),inlineAttachments=form.getAll('inlineAttachments').filter(x=>x&&typeof x.arrayBuffer==='function');let total=0;for(const a of [...attachments,...inlineAttachments])total+=a.size||0;if(total>12*1024*1024)return badRequest('Tổng tệp đính kèm và ảnh nội tuyến tối đa 12 MB.');if(attachments.length+inlineAttachments.length>100)return badRequest('Mỗi bản nháp tối đa 100 tệp đính kèm.');let inlineCidMap=[];try{inlineCidMap=JSON.parse(String(form.get('inlineCidMap')||'[]'))}catch{}if(!Array.isArray(inlineCidMap))return badRequest('Danh sách ảnh nội tuyến không hợp lệ.');
+    const replaceAttachments=form.get('replaceAttachments')==='1';let storageKey=null,names=[...attachments,...inlineAttachments].map(a=>String(a.name||'attachment').slice(0,180));
+    if(names.length){const raw=await buildMime({from:senderAddress||mb.address,to:to.length?to:[mb.address],cc,bcc,subject,text,html,attachments,inlineAttachments,inlineCidMap});storageKey=`drafts/${user.id}/${Date.now()}-${crypto.randomUUID()}.eml`;await env.MAIL_STORAGE.put(storageKey,raw,{httpMetadata:{contentType:'message/rfc822'}})}
+    if(id){const old=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(id,user.id).first();if(!old)return notFound('Không tìm thấy bản nháp.');const storageExpr=replaceAttachments?'?':'COALESCE(?,storage_key)';await env.DB.prepare(`UPDATE compose_drafts SET mailbox_id=?,to_json=?,cc_json=?,bcc_json=?,subject=?,body_text=?,body_html=?,sender_address=?,reply_to_message_id=?,storage_key=${storageExpr},attachment_names_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?`).bind(mailboxId,JSON.stringify(to),JSON.stringify(cc),JSON.stringify(bcc),subject,text,html,senderAddress,replyToMessageId,storageKey,JSON.stringify(names),id,user.id).run();if((replaceAttachments||storageKey)&&old.storage_key&&old.storage_key!==storageKey){try{await env.MAIL_STORAGE.delete(old.storage_key)}catch{}}return json({ok:true,id})}
     const r=await env.DB.prepare(`INSERT INTO compose_drafts(user_id,mailbox_id,to_json,cc_json,bcc_json,subject,body_text,body_html,sender_address,reply_to_message_id,storage_key,attachment_names_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).bind(user.id,mailboxId,JSON.stringify(to),JSON.stringify(cc),JSON.stringify(bcc),subject,text,html,senderAddress,replyToMessageId,storageKey,JSON.stringify(names)).run();return json({ok:true,id:r.meta.last_row_id});
   }
   const dm=path.match(/^\/api\/drafts\/(\d+)$/);
   if(dm&&request.method==='GET'){
-    const d=await env.DB.prepare(`SELECT * FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(dm[1]),user.id).first();if(!d)return notFound('Không tìm thấy bản nháp.');return json({ok:true,draft:d});
+    const d=await env.DB.prepare(`SELECT * FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(dm[1]),user.id).first();if(!d)return notFound('Không tìm thấy bản nháp.');let attachments=[];if(d.storage_key){const parsed=await parseStoredMessage(env,d.storage_key);attachments=(parsed?.attachments||[]).map((a,index)=>({index,filename:a.filename||`attachment-${index+1}`,mimeType:a.mimeType||'application/octet-stream',size:a.content?.byteLength||0,contentId:a.contentId||a.contentID||null,inline:!!(a.contentId||a.contentID)}))}return json({ok:true,draft:d,attachments});
+  }
+  const draftAttachment=path.match(/^\/api\/drafts\/(\d+)\/attachments\/(\d+)$/);
+  if(draftAttachment&&request.method==='GET'){
+    const d=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(draftAttachment[1]),user.id).first();if(!d?.storage_key)return notFound('Không tìm thấy tệp trong bản nháp.');const parsed=await parseStoredMessage(env,d.storage_key),a=parsed?.attachments?.[Number(draftAttachment[2])];if(!a)return notFound('Không tìm thấy tệp trong bản nháp.');const filename=String(a.filename||'attachment').replace(/["\r\n]/g,'');return new Response(a.content,{headers:{'content-type':a.mimeType||'application/octet-stream','content-disposition':`attachment; filename=\"${filename}\"`,'cache-control':'private,no-store','x-content-type-options':'nosniff'}})
   }
   if(dm&&request.method==='DELETE'){
     const d=await env.DB.prepare(`SELECT storage_key FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(dm[1]),user.id).first();await env.DB.prepare(`DELETE FROM compose_drafts WHERE id=? AND user_id=?`).bind(Number(dm[1]),user.id).run();if(d?.storage_key){try{await env.MAIL_STORAGE.delete(d.storage_key)}catch{}}return json({ok:true});
@@ -507,8 +521,9 @@ async function handleInboundEmail(message, env, ctx) {
     } catch {}
     const storageKey=`messages/inbound/${mailbox.id}/${Date.now()}-${crypto.randomUUID()}.eml`;
     const rawEmail=await new Response(message.raw).arrayBuffer();
+    const contentSha256=await digest(new Uint8Array(rawEmail));
     await env.MAIL_STORAGE.put(storageKey,rawEmail,{httpMetadata:{contentType:'message/rfc822'},customMetadata:{recipient,sender}});
-    const result=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,message_id_header,sender,recipients_json,subject,preview,storage_key,raw_size,is_read,is_starred,status,sent_at,received_at) VALUES(?,'inbound',?,?,?,?,?,?,?, ?,0,?,'received',?,CURRENT_TIMESTAMP)`).bind(mailbox.id,folder,messageId,sender,JSON.stringify([recipient]),subject,'',storageKey,rawEmail.byteLength,starred,sentAt).run();
+    const result=await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,message_id_header,sender,recipients_json,subject,preview,storage_key,raw_size,content_sha256,hash_recorded_at,is_read,is_starred,status,sent_at,received_at) VALUES(?,'inbound',?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP,0,?,'received',?,CURRENT_TIMESTAMP)`).bind(mailbox.id,folder,messageId,sender,JSON.stringify([recipient]),subject,'',storageKey,rawEmail.byteLength,contentSha256,starred,sentAt).run();
     try{await env.DB.prepare(`INSERT INTO notifications(user_id,type,title,body) VALUES(?,'mail',?,?)`).bind(mailbox.user_id,`Thư mới từ ${sender}`,subject).run()}catch{}
     console.log('MAIL_RECEIVED',{id:result.meta?.last_row_id,from:sender,to:recipient,subject,folder,storageKey,size:rawEmail.byteLength});
   } catch (error) {
@@ -521,7 +536,13 @@ export default {
   async fetch(request,env){
     try{
       const url=new URL(request.url);
-      if(url.pathname.startsWith('/api/')){await ensureSchema(env);return await routeApi(request,env)}
+      if(url.pathname.startsWith('/api/')){
+        if(!['GET','HEAD','OPTIONS'].includes(request.method)){
+          const origin=request.headers.get('Origin');
+          if(origin){let supplied;try{supplied=new URL(origin).origin}catch{return json({ok:false,error:'Origin không hợp lệ.'},403)}if(supplied!==url.origin)return json({ok:false,error:'Yêu cầu ghi dữ liệu khác nguồn bị từ chối.'},403)}
+        }
+        await ensureSchema(env);const response=await routeApi(request,env);const h=new Headers(response.headers);h.set('x-content-type-options','nosniff');h.set('referrer-policy','no-referrer');h.set('x-frame-options','DENY');h.set('permissions-policy','camera=(), microphone=(), geolocation=()');h.set('cache-control','no-store');return new Response(response.body,{status:response.status,statusText:response.statusText,headers:h});
+      }
       return env.ASSETS.fetch(request)
     }catch(e){
       console.error('APP_ERROR',{message:e?.message||String(e),stack:e?.stack||''});

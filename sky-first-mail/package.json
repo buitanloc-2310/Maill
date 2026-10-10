@@ -8,8 +8,9 @@
     "deploy": "wrangler deploy",
     "db:migrate": "wrangler d1 migrations apply DB --remote",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
-    "validate": "node --check src/index.js && node --check src/lib/auth.js && node --check src/lib/http.js && node --check src/lib/mail.js && node --check src/lib/security.js && node --check src/lib/compose.js && node --check src/lib/reliability.js && node --check src/lib/transport.js && node --check public/app.js && node --check public/v3.js && node --check public/v4.js && node --check public/v5.js && node --check public/v7.js",
-    "test": "node --test tests/mail.test.mjs"
+    "validate": "node --check src/index.js && node --check src/lib/auth.js && node --check src/lib/http.js && node --check src/lib/mail.js && node --check src/lib/security.js && node --check src/lib/compose.js && node --check src/lib/reliability.js && node --check src/lib/transport.js && node --check public/app.js && node --check public/v3.js && node --check public/v4.js && node --check public/v5.js && node --check public/v7.js && node --check desktop/main.cjs",
+    "test": "node --test tests/mail.test.mjs",
+    "test:requirements": "node --test tests/requirements.test.mjs"
   },
   "dependencies": {
     "postal-mime": "^2.4.3"

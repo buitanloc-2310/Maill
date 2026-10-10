@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "builtin-html-01",
+      "name": "01-thu-moi-hop-tac.html",
+      "subject": "Thư mời phối hợp triển khai chương trình",
+      "body_text": "Thư mời phối hợp triển khai chương trình",
+      "category": "HTML chuyên nghiệp",
+      "file": "/library/html/01-thu-moi-hop-tac.html",
+      "kind": "html"
+    },
+    {
+      "id": "builtin-html-02",
+      "name": "02-thu-moi-hop.html",
+      "subject": "Thư mời họp / lịch trao đổi",
+      "body_text": "Thư mời họp / lịch trao đổi",
+      "category": "HTML chuyên nghiệp",
+      "file": "/library/html/02-thu-moi-hop.html",
+      "kind": "html"
+    },
+    {
+      "id": "builtin-html-03",
+      "name": "03-de-xuat-phoi-hop.html",
+      "subject": "Đề xuất chương trình / dự án",
+      "body_text": "Đề xuất chương trình / dự án",
+      "category": "HTML chuyên nghiệp",
+      "file": "/library/html/03-de-xuat-phoi-hop.html",
+      "kind": "html"
+    },
+    {
+      "id": "builtin-html-04",
+      "name": "04-xac-nhan-tiep-nhan.html",
+      "subject": "Xác nhận nhận email/tài liệu",
+      "body_text": "Xác nhận nhận email/tài liệu",
+      "category": "HTML chuyên nghiệp",
+      "file": "/library/html/04-xac-nhan-tiep-nhan.html",
+      "kind": "html"
+    },
+    {
+      "id": "builtin-html-05",
+      "name": "05-thu-cam-on-theo-doi.html",
+      "subject": "Cảm ơn sau cuộc họp / trao đổi",
+      "body_text": "Cảm ơn sau cuộc họp / trao đổi",
+      "category": "HTML chuyên nghiệp",
+      "file": "/library/html/05-thu-cam-on-theo-doi.html",
+      "kind": "html"
+    },
+    {
+      "id": "builtin-chat-01",
+      "name": "Xác nhận lịch họp",
+      "subject": "",
+      "body_text": "Mình xác nhận lịch họp vào [thời gian]. Hẹn gặp bạn tại [địa điểm/liên kết] nhé.",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-02",
+      "name": "Nhắc gửi tài liệu",
+      "subject": "",
+      "body_text": "Bạn gửi giúp mình tài liệu [tên tài liệu] trước [thời hạn] để bên mình kịp tổng hợp nhé. Cảm ơn bạn!",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-03",
+      "name": "Xác nhận đã nhận",
+      "subject": "",
+      "body_text": "Mình đã nhận được thông tin/tài liệu bạn gửi. Mình sẽ kiểm tra và phản hồi nếu cần bổ sung.",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-04",
+      "name": "Theo dõi phản hồi",
+      "subject": "",
+      "body_text": "Mình xin phép theo dõi nội dung [chủ đề] đã trao đổi hôm trước. Khi thuận tiện, bạn cập nhật giúp mình trạng thái nhé.",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-05",
+      "name": "Cảm ơn hỗ trợ",
+      "subject": "",
+      "body_text": "Cảm ơn bạn đã hỗ trợ và phối hợp. Mình ghi nhận các thông tin này để xử lý bước tiếp theo.",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-06",
+      "name": "Cập nhật tiến độ",
+      "subject": "",
+      "body_text": "Cập nhật nhanh: [đầu việc] hiện ở trạng thái [trạng thái]. Bước tiếp theo là [hành động], dự kiến hoàn thành [thời hạn].",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-07",
+      "name": "Xin dời lịch",
+      "subject": "",
+      "body_text": "Mình xin lỗi vì phát sinh lịch đột xuất. Mình có thể chuyển sang [khung giờ 1] hoặc [khung giờ 2] được không?",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-08",
+      "name": "Bàn giao đầu việc",
+      "subject": "",
+      "body_text": "Mình bàn giao [đầu việc] gồm [tài liệu/liên kết]. Việc cần tiếp tục là [bước tiếp theo], hạn dự kiến [thời hạn].",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-09",
+      "name": "Thông báo đã hoàn tất",
+      "subject": "",
+      "body_text": "Mình đã hoàn tất [đầu việc]. Kết quả/tài liệu được đính kèm tại đây. Bạn xem giúp và báo lại nếu cần chỉnh sửa nhé.",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    },
+    {
+      "id": "builtin-chat-10",
+      "name": "Xin làm rõ thông tin",
+      "subject": "",
+      "body_text": "Để tránh hiểu nhầm, bạn xác nhận giúp mình [nội dung cần làm rõ] và mốc thời gian áp dụng nhé. Cảm ơn bạn.",
+      "category": "Chat nhanh",
+      "kind": "chat"
+    }
+  ]
+}

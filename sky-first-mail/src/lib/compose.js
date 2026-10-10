@@ -1,6 +1,6 @@
 import {json,badRequest} from './http.js';
 import {buildMime,cleanEmailHtml} from './mail.js';
-import {fingerprint} from './reliability.js';
+import {fingerprint,digest} from './reliability.js';
 const email=value=>String(value||'').trim().toLowerCase();
 const valid=value=>/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value);
 const list=value=>[...new Set(String(value||'').split(/[;,]/).map(email).filter(Boolean))];
@@ -15,7 +15,7 @@ export async function reliableCompose(request,env,user,services){
  const subject=String(form.get('subject')||'').replace(/[\r\n]/g,' ').slice(0,998),text=String(form.get('text')||'').slice(0,500000),html=cleanEmailHtml(String(form.get('html')||'').slice(0,500000)),priority=String(form.get('priority')||'normal');
  const attachments=form.getAll('attachments').filter(x=>typeof x?.arrayBuffer==='function'),inlineAttachments=form.getAll('inlineAttachments').filter(x=>typeof x?.arrayBuffer==='function');
  if([...attachments,...inlineAttachments].reduce((n,x)=>n+x.size,0)>12*1024*1024)return badRequest('Tổng tệp và ảnh nội tuyến tối đa 12 MB.');
- if(attachments.length+inlineAttachments.length>30)return badRequest('Mỗi thư tối đa 30 tệp.');
+ if(attachments.length+inlineAttachments.length>100)return badRequest('Mỗi thư tối đa 100 tệp, trong giới hạn tổng dung lượng 12 MB.');
  let inlineCidMap=[];try{inlineCidMap=JSON.parse(String(form.get('inlineCidMap')||'[]'))}catch{}
  if(!Array.isArray(inlineCidMap)||inlineCidMap.some(x=>!x||!/^[-a-zA-Z0-9_.@]+$/.test(x.cid||'')))return badRequest('Mã ảnh nội tuyến không hợp lệ.');
  if(inlineAttachments.some(a=>!/^image\/(png|jpeg|gif|webp)$/.test(a.type)||!inlineCidMap.some(x=>x.name===a.name)))return badRequest('Ảnh nội tuyến phải là PNG, JPEG, GIF hoặc WebP và có mã nhúng hợp lệ.');
@@ -34,6 +34,7 @@ export async function reliableCompose(request,env,user,services){
   let inReplyTo=null;const replyId=Number(form.get('replyToMessageId'));if(replyId){const original=await services.ownsMessage(env,user.id,replyId);inReplyTo=original?.message_id_header||null;}
   const references=inReplyTo?[inReplyTo]:[],messageId=`<${id}@${fromMb.sender_address.split('@')[1]}>`,storageKey=`messages/outbound/${id}.eml`;
   const raw=await buildMime({from:fromMb.sender_address,to,cc,bcc,subject,text,html,attachments,inlineAttachments,inlineCidMap,messageId,inReplyTo,references,replyTo,priority});
+  const contentSha256=await digest(new Uint8Array(raw));
   // Persist recoverable MIME before contacting the external provider.
   await env.MAIL_STORAGE.put(storageKey,raw,{httpMetadata:{contentType:'message/rfc822'}});
   await env.DB.prepare("UPDATE send_operations SET storage_key=?,status='prepared',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(storageKey,id).run();
@@ -45,7 +46,7 @@ export async function reliableCompose(request,env,user,services){
    await env.DB.prepare("UPDATE send_operations SET provider_id=?,status='accepted',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(providerId,id).run();
   }
   const now=new Date().toISOString(),preview=(text||html.replace(/<[^>]+>/g,' ')).slice(0,180);
-  const insert=(mailbox,direction,folder,recipients,blind,read)=>env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,bcc_json,subject,preview,storage_key,raw_size,is_read,status,sent_at,received_at,message_id_header,thread_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(mailbox,direction,folder,fromMb.sender_address,JSON.stringify(recipients),JSON.stringify(cc),JSON.stringify(blind),subject,preview,storageKey,raw.byteLength,read,direction==='outbound'?'sent':'received',now,now,messageId,inReplyTo||messageId);
+  const insert=(mailbox,direction,folder,recipients,blind,read)=>env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,sender,recipients_json,cc_json,bcc_json,subject,preview,storage_key,raw_size,content_sha256,hash_recorded_at,is_read,status,sent_at,received_at,message_id_header,thread_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(mailbox,direction,folder,fromMb.sender_address,JSON.stringify(recipients),JSON.stringify(cc),JSON.stringify(blind),subject,preview,storageKey,raw.byteLength,contentSha256,now,read,direction==='outbound'?'sent':'received',now,now,messageId,inReplyTo||messageId);
   const response={ok:true,internal:!hasExternal,external:hasExternal,provider:hasExternal?providerName:null,providerId,operationId:id};
   const statements=[insert(fromMb.id,'outbound','sent',to,bcc,1)];const recipients=new Map();for(const x of [...groups.to,...groups.cc,...groups.bcc])if(x.mb && !(hasExternal&&!external('to').length&&to.includes(x.addr)))recipients.set(x.mb.id,x);
   for(const {mb} of recipients.values())statements.push(insert(mb.id,'inbound','inbox',to,[],0));

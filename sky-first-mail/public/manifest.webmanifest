@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "Sky First Mail",
+  "short_name": "Sky Mail",
+  "description": "Trung tâm Thư điện tử Sky First",
+  "lang": "vi-VN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f9ff",
+  "theme_color": "#073c9b",
+  "icons": [
+    { "src": "/app-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/app-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

@@ -8,14 +8,39 @@ export async function parseStoredMessage(env, storageKey) {
 }
 
 export function cleanEmailHtml(html='') {
-  return String(html)
-    .replace(/<script[\s\S]*?<\/script>/gi,'')
-    .replace(/<iframe[\s\S]*?<\/iframe>/gi,'')
-    .replace(/<object[\s\S]*?<\/object>/gi,'')
-    .replace(/<embed[^>]*>/gi,'')
-    .replace(/<form[\s\S]*?<\/form>/gi,'')
-    .replace(/\son\w+\s*=\s*(['"]).*?\1/gi,'')
-    .replace(/javascript:/gi,'');
+  // Conservative sanitization for untrusted message/template HTML. This is intentionally
+  // dependency-free so Worker deployments do not rely on a browser DOM implementation.
+  let value=String(html??'').replace(/\u0000/g,'');
+  value=value.replace(/<!--[\s\S]*?-->/g,'');
+  value=value.replace(/<(script|iframe|object|embed|form|svg|math|video|audio|canvas|template|applet)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'');
+  value=value.replace(/<(script|iframe|object|embed|form|svg|math|video|audio|canvas|template|applet)\b[^>]*\/?>/gi,'');
+  value=value.replace(/<\/(script|iframe|object|embed|form|svg|math|video|audio|canvas|template|applet)\s*>/gi,'');
+  value=value.replace(/<(meta|base|link)\b[^>]*>/gi,'');
+  value=value.replace(/\s+on[a-z0-9_:-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,'');
+  value=value.replace(/\s+(srcdoc|formaction|action)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi,'');
+  const decodeEntities = input => String(input).replace(/&#(x[\da-f]+|\d+);?/gi,(_,n)=>{
+    const cp=n[0].toLowerCase()==='x'?parseInt(n.slice(1),16):parseInt(n,10);
+    return Number.isFinite(cp)&&cp>0&&cp<=0x10ffff?String.fromCodePoint(cp):'';
+  }).replace(/&colon;/gi,':').replace(/&tab;/gi,'\t').replace(/&newline;/gi,'\n');
+  value=value.replace(/\s+(href|src|xlink:href|background|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,(full,name,double,single,unquoted)=>{
+    const raw=double??single??unquoted??'';
+    const normalized=decodeEntities(raw).replace(/[\u0000-\u0020\u007f]+/g,'').toLowerCase();
+    if(/^\s*javascript:/.test(normalized)||/^vbscript:/.test(normalized)||/^data:text\/html/.test(normalized))return '';
+    if(name.toLowerCase()==='background'||name.toLowerCase()==='poster')return '';
+    if(name.toLowerCase()==='src' && /^data:(?!image\/(?:png|gif|jpe?g|webp);base64,)/i.test(raw))return '';
+    return ` ${name.toLowerCase()}="${String(raw).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}"`;
+  });
+  value=value.replace(/\s+style\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,(full,double,single,unquoted)=>{
+    const css=double??single??unquoted??'';
+    if(/expression\s*\(|javascript\s*:|vbscript\s*:|@import|url\s*\(/i.test(decodeEntities(css)))return '';
+    return ` style="${css.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}"`;
+  });
+  // Remove unsafe CSS imports/URLs but preserve ordinary email styles such as colors and tables.
+  value=value.replace(/<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi,(_,attrs,css)=>{
+    const safe=String(css).replace(/@import[^;]*;?/gi,'').replace(/expression\s*\([^)]*\)/gi,'').replace(/url\s*\([^)]*\)/gi,'');
+    return `<style>${safe}</style>`;
+  });
+  return value;
 }
 
 function encHeader(s='') { return String(s).replace(/[\r\n]+/g,' ').trim(); }
