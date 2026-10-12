@@ -102,7 +102,7 @@
           <label><span>Ưu tiên</span><select id="v5-priority"><option value="normal">Bình thường</option><option value="high">Cao</option><option value="low">Thấp</option></select></label>
         </div>
         <input id="v5-subject" class="subject-input" value="${esc(seed.subject||'')}" placeholder="Tiêu đề">
-        <div class="v5-studio-bar"><div class="v5-tabs"><button type="button" data-mode="visual" class="active">✎ Soạn thảo</button><button type="button" data-mode="html">&lt;/&gt; HTML</button><button type="button" data-mode="preview">◉ Xem trước</button></div><div class="v5-actions"><label class="secondary v5-filebtn">⇧ Nhập HTML<input id="v5-html-file" type="file" accept=".html,.htm,text/html" hidden></label><button type="button" class="secondary" id="v5-template">▦ Mẫu</button><button type="button" class="secondary" id="v5-save-template">＋ Lưu mẫu</button></div></div>
+        <div class="v5-studio-bar"><div class="v5-tabs"><button type="button" data-mode="visual" class="active">✎ Soạn thảo</button><button type="button" data-mode="html">&lt;/&gt; HTML</button><button type="button" data-mode="preview">◉ Xem trước</button></div><div class="v5-actions"><label class="secondary v5-filebtn">⇧ Nhập HTML<input id="v5-html-file" type="file" accept=".html,.htm,text/html" hidden></label><button type="button" class="secondary" id="v5-template">▦ Mẫu</button><button type="button" class="secondary" id="v5-copy-formatted" title="Sao chép nội dung đã định dạng để dán sang Gmail, Outlook hoặc ứng dụng email khác">▣ Sao chép nội dung định dạng</button><button type="button" class="secondary" id="v5-save-template">＋ Lưu mẫu</button></div></div>
         <div class="v5-editor-tools" id="v5-tools">
           <div class="v5-tool-group"><button type="button" data-cmd="undo" title="Hoàn tác">↶</button><button type="button" data-cmd="redo" title="Làm lại">↷</button></div>
           <select id="v5-font" title="Phông chữ"><option value="Arial">Arial</option><option value="Georgia">Georgia</option><option value="Tahoma">Tahoma</option><option value="Verdana">Verdana</option><option value="Trebuchet MS">Trebuchet</option><option value="Courier New">Courier</option></select>
@@ -152,6 +152,28 @@
     const markChanged=()=>{dirty=true;state.textContent='Có thay đổi chưa lưu';clearTimeout(timer);timer=setTimeout(()=>saveDraft(true),1800);updateStats();updateRecipientCount()};form.addEventListener('input',markChanged);source.addEventListener('input',updateStats);$('#v5-save-draft',w).onclick=()=>saveDraft(false);
     const send=async(test=false)=>{try{if(mode==='visual')syncFromVisual();if(mode==='html')syncFromSource();if(!$('#v5-subject',w).value.trim()&&!test&&!confirm('Email chưa có tiêu đề. Vẫn gửi?'))return;const target=test?(await req('/api/me')).user.email:null;const requestId=test?crypto.randomUUID():(activeRequestId||(activeRequestId=crypto.randomUUID()));const fd=makeFd(target,requestId);$('#v5-send',w).disabled=true;$('#v5-send',w).innerHTML='Đang gửi…';const d=await req('/api/compose',{method:'POST',body:fd});if(test){toast('Đã gửi thư thử cho chính bạn.');$('#v5-send',w).disabled=false;$('#v5-send',w).innerHTML='Gửi <span>⌘↵</span>';return}activeRequestId=null;if(draftId)req(`/api/drafts/${draftId}`,{method:'DELETE'}).catch(()=>{});dirty=false;toast('Đã gửi email.');w.remove();$('#reload')?.click()}catch(e){if(!test&&(e.status===400||e.status===401||e.status===403||(e.status===409&&/Nội dung đã thay đổi/.test(e.message))))activeRequestId=null;toast(e.message,'err');$('#v5-send',w).disabled=false;$('#v5-send',w).innerHTML='Gửi <span>⌘↵</span>'}};form.onsubmit=e=>{e.preventDefault();send(false)};$('#v5-send-test',w).onclick=()=>send(true);
     $('#v5-template',w).onclick=()=>templatePicker(templates.templates,t=>{$('#v5-subject',w).value=t.subject||'';source.value=t.body_html||esc(t.body_text||'').replace(/\n/g,'<br>');syncFromSource();setMode('visual');markChanged();toast(`Đã nạp mẫu “${t.name}”.`) });
+    $('#v5-copy-formatted',w).onclick=async()=>{
+      try{
+        if(mode==='visual')syncFromVisual();else syncFromSource();
+        const safe=sanitizeComposerHtml(source.value);
+        source.value=safe;visual.innerHTML=safe;
+        const doc=new DOMParser().parseFromString(safe,'text/html');
+        const plain=(doc.body?.innerText||doc.body?.textContent||'').trim();
+        if(!safe.trim()){toast('Chưa có nội dung để sao chép.','warn');return}
+        if(navigator.clipboard?.write&&typeof ClipboardItem!=='undefined'){
+          await navigator.clipboard.write([new ClipboardItem({
+            'text/html':new Blob([safe],{type:'text/html'}),
+            'text/plain':new Blob([plain],{type:'text/plain'})
+          })]);
+        }else{
+          const selection=getSelection(),range=document.createRange(),active=document.activeElement;
+          range.selectNodeContents(visual);selection.removeAllRanges();selection.addRange(range);
+          const ok=document.execCommand('copy');selection.removeAllRanges();active?.focus?.();
+          if(!ok)throw new Error('Trình duyệt không hỗ trợ sao chép HTML định dạng. Hãy dùng nút này trên Chrome hoặc Edge.');
+        }
+        toast('Đã sao chép nội dung đã định dạng. Hãy dán vào phần nội dung thư mới ở Gmail/Outlook.');
+      }catch(e){toast(e.message||'Không sao chép được nội dung HTML.','err')}
+    };
     $('#v5-save-template',w).onclick=async()=>{if(mode==='visual')syncFromVisual();const name=prompt('Tên mẫu email:');if(!name)return;try{await req('/api/templates',{method:'POST',body:JSON.stringify({name,subject:$('#v5-subject',w).value,bodyHtml:sanitizeComposerHtml(source.value),bodyText:strip(sanitizeComposerHtml(source.value))})});templates=await req('/api/templates');toast('Đã lưu mẫu email.')}catch(e){toast(e.message,'err')}};
     $('#v5-signature',w).onchange=()=>{const id=Number($('#v5-signature',w).value);const sg=signatures.signatures.find(x=>x.id===id);if(!sg)return;visual.insertAdjacentHTML('beforeend',`<div class="sfm-signature"><br>${sanitizeComposerHtml(sg.content_html||'')}</div>`);syncFromVisual();markChanged()};
     const restoreSavedAttachments=async()=>{if(!draftId||!Array.isArray(seed.savedAttachments)||!seed.savedAttachments.length)return;try{for(const meta of seed.savedAttachments){const r=await fetch(`/api/drafts/${draftId}/attachments/${meta.index}`);if(!r.ok)continue;const blob=await r.blob(),file=new File([blob],meta.filename||`attachment-${meta.index+1}`,{type:meta.mimeType||blob.type||'application/octet-stream'});if(meta.inline){file._cid=String(meta.contentId||'').replace(/[<>]/g,'');inlineFiles.push(file)}else setFiles(files,[...files.files,file])}renderFiles()}catch(e){toast('Không thể khôi phục một số tệp của bản nháp.','warn')}};
