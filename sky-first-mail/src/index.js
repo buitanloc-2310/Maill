@@ -623,7 +623,7 @@ async function routeApi(request,env){
       const target=await env.DB.prepare(`SELECT * FROM users WHERE id=?`).bind(id).first();
       if(!target)return notFound('Không tìm thấy tài khoản.');
       if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được xóa tài khoản quản trị.');
-      const b=await bodyJson(request);if(normalizeEmail(b.confirmEmail)!==normalizeEmail(target.email))return badRequest('Hãy nhập đúng địa chỉ email để xác nhận xóa vĩnh viễn.');
+      const b=await bodyJson(request);if(b.confirmed!==true)return badRequest('Bạn cần xác nhận xóa tài khoản trước khi tiếp tục.');
       const canDeleteSql=`(role<>'super_admin' OR status<>'active' OR (SELECT count(*) FROM users WHERE role='super_admin' AND status='active')>1)`;
       const objects=[];
       // Inventory all data owned by the account before removing rows; message.mailbox_id uses SET NULL,
