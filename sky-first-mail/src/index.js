@@ -623,7 +623,7 @@ async function routeApi(request,env){
       const target=await env.DB.prepare(`SELECT * FROM users WHERE id=?`).bind(id).first();
       if(!target)return notFound('Không tìm thấy tài khoản.');
       if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được xóa tài khoản quản trị.');
-      const b=await bodyJson(request);if(b.confirmed!==true)return badRequest('Bạn cần xác nhận xóa tài khoản trước khi tiếp tục.');
+      const b=await bodyJson(request);if(b.confirm!==true && normalizeEmail(b.confirmEmail)!==normalizeEmail(target.email))return badRequest('Yêu cầu xác nhận xóa không hợp lệ. Hãy xác nhận trong giao diện quản trị rồi thử lại.');
       const canDeleteSql=`(role<>'super_admin' OR status<>'active' OR (SELECT count(*) FROM users WHERE role='super_admin' AND status='active')>1)`;
       const objects=[];
       // Inventory all data owned by the account before removing rows; message.mailbox_id uses SET NULL,
@@ -638,12 +638,16 @@ async function routeApi(request,env){
       // Keep database deletion atomic: a failed FK or query must not erase mail rows while leaving the account.
       // All three statements use the same SQL guard. If concurrent requests race to remove the last root,
       // no dependent mail/send-operation rows are deleted unless the guarded user deletion is allowed.
+      const guard=`EXISTS (SELECT 1 FROM users WHERE id=? AND ${canDeleteSql})`;
       const results=await env.DB.batch([
-        env.DB.prepare(`DELETE FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND EXISTS (SELECT 1 FROM users WHERE id=? AND ${canDeleteSql})`).bind(id,id),
-        env.DB.prepare(`DELETE FROM send_operations WHERE user_id=? AND EXISTS (SELECT 1 FROM users WHERE id=? AND ${canDeleteSql})`).bind(id,id),
+        env.DB.prepare(`DELETE FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND ${guard}`).bind(id,id),
+        env.DB.prepare(`DELETE FROM send_operations WHERE user_id=? AND ${guard}`).bind(id,id),
+        env.DB.prepare(`DELETE FROM login_history WHERE user_id=? AND ${guard}`).bind(id,id),
+        env.DB.prepare(`DELETE FROM mail_templates WHERE user_id=? AND ${guard}`).bind(id,id),
+        env.DB.prepare(`DELETE FROM compose_drafts WHERE user_id=? AND ${guard}`).bind(id,id),
         env.DB.prepare(`DELETE FROM users WHERE id=? AND ${canDeleteSql}`).bind(id)
       ]);
-      if(Number(results?.[2]?.meta?.changes||0)!==1)return badRequest('Không thể xóa Siêu quản trị viên cuối cùng đang hoạt động.');
+      if(Number(results?.[5]?.meta?.changes||0)!==1)return badRequest('Không thể xóa Siêu quản trị viên cuối cùng đang hoạt động.');
       await audit(env,user.id,'admin.user.deleted','user',id,{email:target.email});
       for(const key of [...new Set(objects)])await deleteObjectIfUnreferenced(env,key);
       return json({ok:true,deleted:true});

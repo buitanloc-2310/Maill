@@ -349,6 +349,19 @@ body{background:linear-gradient(135deg,#eef8ff 0%,#f8fbff 46%,#edf5ff 100%)}
   .workspace>aside>.compose{flex:0 0 44px;width:44px;min-width:44px;height:48px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;padding:2px}
   .workspace>aside>.compose::after{content:"Soạn";font-size:8px;font-weight:850;line-height:1}
 }
-
-/* Sky First Mail: dedicated admin workspace (not a floating modal) */
-.admin-page-wrap{position:fixed;inset:0;z-index:120;background:var(--bg,#f1f7fc);overflow:auto;padding:clamp(16px,3vw,40px);backdrop-filter:none}.admin-page{position:relative;width:min(1440px,100%);min-height:calc(100vh - 2 * clamp(16px,3vw,40px));margin:0 auto;background:var(--panel,#fff);color:var(--text,#12395d);border:1px solid var(--line,#c8e2f8);border-radius:22px;padding:clamp(20px,3vw,40px);box-shadow:0 10px 35px rgba(10,50,90,.10)}.admin-page .admin-page-close{position:absolute;right:20px;top:20px;width:40px;height:40px;border:0;border-radius:12px;background:var(--panel2,#e1f1ff);color:var(--text,#12395d);font-size:25px;cursor:pointer}.admin-page .admin-head{padding-right:54px}.admin-page #adminbody{min-height:55vh}.admin-page .admin-tabs{position:sticky;top:0;z-index:2;background:var(--panel,#fff);padding-top:8px}.admin-page .admin-users,.admin-page .admin-list{max-height:none;overflow:visible}@media(max-width:700px){.admin-page-wrap{padding:8px}.admin-page{padding:18px 12px;border-radius:14px;min-height:calc(100vh - 16px)}.admin-page .admin-head{display:block;padding-right:42px}.admin-page .stats{grid-template-columns:repeat(2,minmax(0,1fr))}.admin-page .admin-page-close{right:10px;top:10px}}
+/* Sky First Mail admin workspace: standalone, non-overlay layout */
+.admin-page-wrap{position:fixed!important;inset:0!important;z-index:200!important;padding:0!important;display:block!important;overflow:auto!important;background:var(--bg)!important;backdrop-filter:none!important}
+.admin-page-wrap>.modal{width:100%!important;max-width:none!important;height:100dvh!important;max-height:none!important;min-height:100vh!important;overflow:auto!important;border:0!important;border-radius:0!important;padding:28px clamp(18px,4vw,64px)!important;box-shadow:none!important;background:linear-gradient(145deg,#f4fbff,#e5f5ff)!important}
+.admin-page-wrap>.modal>.modal-x{position:fixed!important;right:22px!important;top:18px!important;z-index:5!important}
+.admin-page-wrap #adminbody{max-width:1440px;margin:0 auto}
+.admin-page-wrap .admin-head,.admin-page-wrap .stats,.admin-page-wrap .admin-tabs{max-width:1440px;margin-left:auto;margin-right:auto}
+.admin-page-wrap .account-list{display:grid;gap:8px}
+.admin-page-wrap .account-row{display:grid;grid-template-columns:22px 42px minmax(180px,1fr) auto auto auto;gap:12px;align-items:center;margin:0;padding:13px 16px;background:rgba(214,239,255,.72)}
+.admin-page-wrap .user-select,.admin-page-wrap #selectAllUsers{width:17px;height:17px;accent-color:var(--blue)}
+.bulk-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 14px;padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.65)}
+.bulk-toolbar .bulk-check{display:flex;align-items:center;gap:8px;margin:0 auto 0 0}.bulk-toolbar .bulk-check input{width:17px;height:17px}.bulk-toolbar #bulkStatus{flex-basis:100%;font-size:13px;color:var(--muted)}
+.inline-confirm{position:fixed;inset:0;z-index:400;display:grid;place-items:center;padding:20px;background:rgba(5,22,43,.56);backdrop-filter:blur(6px)}
+.inline-confirm-card{width:min(520px,100%);padding:26px;border:1px solid var(--line);border-radius:20px;background:var(--panel);box-shadow:var(--shadow)}
+.inline-confirm-card h3{margin:0 0 10px}.inline-confirm-card p{line-height:1.6;color:var(--muted)}.inline-confirm-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px}
+.admin-dialog-wrap{z-index:300!important}
+@media(max-width:760px){.admin-page-wrap>.modal{padding:64px 12px 20px!important}.admin-page-wrap .account-row{grid-template-columns:20px 36px minmax(0,1fr) auto;}.admin-page-wrap .account-row>.pill{display:none}.bulk-toolbar>*{max-width:100%}}
