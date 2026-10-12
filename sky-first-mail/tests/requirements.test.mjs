@@ -103,13 +103,17 @@ test('send composer holds a stable request key across retry attempts', () => {
   assert.match(backend, /request\.headers\.get\('idempotency-key'\)/i);
 });
 
-test('external images in received emails require explicit user opt-in', () => {
+test('external images in received emails load by default while active email content remains isolated', () => {
   const ui = read('../public/app.js');
-  assert.match(ui, /function prepareMailHtml\(html,allowRemote=false\)/);
-  assert.ok(ui.includes("if(/^(?:https?:)?\\/\\//i.test(src)&&!allowRemote)"), 'remote image loading must require explicit opt-in');
-  assert.match(ui, /renderMailFrame\(false\)/);
-  assert.match(ui, /renderMailFrame\(true\)/);
-  assert.match(ui, /referrerpolicy=\"no-referrer\"/);
+  assert.match(ui, /function prepareMailHtml\(html\)/);
+  assert.doesNotMatch(ui, /loadRemoteImagesBtn|sfmRemoteSrc|Ảnh bên ngoài đang bị chặn/);
+  assert.match(ui, /if\(name==='srcset'\)/, 'safe HTTP/HTTPS srcset candidates must be preserved');
+  assert.match(ui, /name==='background'&&!\//, 'safe legacy remote image backgrounds must be preserved');
+  assert.ok(ui.includes('const imagePolicy="\'self\' data: http: https:"'), 'remote HTTP/HTTPS images must be allowed by the sandbox CSP');
+  assert.match(ui, /renderMailFrame\(\)/);
+  assert.match(ui, /referrerpolicy="no-referrer"/);
+  assert.match(ui, /noopener noreferrer nofollow/);
+  assert.match(ui, /script-src 'none'/);
 });
 
 test('Proofline records message hashes when saved and exposes owner-scoped verification UI/API', () => {
@@ -432,7 +436,8 @@ test('client email renderer removes active elements and unsafe attributes before
   assert.match(helper, /srcdoc/);
   assert.match(helper, /@import\|url/);
   assert.match(helper, /noopener noreferrer nofollow/);
-  assert.match(helper, /sfmRemoteSrc/);
+  assert.match(helper, /doc\.querySelectorAll\('img\[src\]'\)/);
+  assert.doesNotMatch(helper, /sfmRemoteSrc|loadRemoteImagesBtn/);
 });
 
 test('admin service status reports configured domains rather than hard-coding receive as healthy', () => {
@@ -446,14 +451,15 @@ test('admin service status reports configured domains rather than hard-coding re
   assert.doesNotMatch(block, /receiving:true/);
 });
 
-test('received email iframe has CSP that blocks script and outbound loads unless images are enabled', () => {
+test('received email iframe permits HTTP/HTTPS images while blocking active content and other outbound loads', () => {
   const ui = read('../public/app.js');
   assert.match(ui, /http-equiv="Content-Security-Policy"/);
   assert.match(ui, /default-src 'none'/);
   assert.match(ui, /img-src \$\{imagePolicy\}/);
   assert.match(ui, /script-src 'none'/);
   assert.match(ui, /connect-src 'none'/);
-  assert.match(ui, /const imagePolicy=allowRemote\?/);
+  assert.match(ui, /const imagePolicy=\"'self' data: http: https:\"/);
+  assert.doesNotMatch(ui, /loadRemoteImagesBtn|renderMailFrame\(false\)/);
 });
 
 test('R2 cleanup separates reference-check failures from storage deletion failures', () => {

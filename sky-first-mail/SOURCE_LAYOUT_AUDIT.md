@@ -1,19 +1,20 @@
-# Source layout audit — Sky First Mail
+# Source Layout Audit — Sky First Mail R8 CLEAN
 
 Date: 2026-10-12
 
 ## Canonical project root
 
-Use **this directory** (`Maill-main/sky-first-mail/`) as the active project root. Its manifest identifies `sky-first-mail` version `12.0.1`; it contains the current Worker entry point (`src/index.js`), current frontend (`public/`), migrations `0001` through `0008`, the reliability tables, current tests, and the current desktop shell.
+Dự án hoạt động trong một cây nguồn duy nhất ở thư mục `Sky-First-Mail/`, nơi có `package.json`, `package-lock.json`, `wrangler.jsonc`, `src/`, `public/`, `migrations/`, `tests/`, `scripts/` và `desktop/`.
 
-Run dependency installation, validation, tests, local development, and deployment commands only from this directory after validating the environment and reviewing the deployment target.
+## Archive cleanliness
 
-## Preserved nested snapshot
+- Không có ZIP cũ lồng bên trong gói phát hành.
+- Không có thư mục dự án cũ trùng tên bị lồng bên trong.
+- Không có `node_modules`, `.git`, `.env` hoặc `.dev.vars` trong bản phát hành.
+- Snapshot cũ từ các ZIP trước được giữ bên ngoài gói này, không bị hợp nhất vào cây nguồn R8.
 
-The ZIP also contains `Maill-main/sky-first-mail/sky-first-mail/`. That nested tree identifies itself as version `5.0.0`, has fewer migrations and materially different files. It is preserved as a historical/legacy snapshot because it is not byte-identical to the root source. It must **not** be used as the active deployment root by mistake.
+## Source and release status
 
-No attempt was made to merge or delete that snapshot during this repair. Reconciliation or removal should be a separately reviewed action after an owner verifies whether it is still needed.
+Package version: `12.0.4`. Bản R8 cập nhật chính sách ảnh/link trong email nhận và bài kiểm thử tương ứng. Cấu hình backend, API, D1/R2 và migrations không thay đổi trong bản vá này.
 
-## Operational caution
-
-The ZIP intentionally preserves the duplicate tree to avoid destroying potentially important source history. This introduces an ambiguity for anyone opening the archive. Follow the canonical root described above; compare file/version manifests before any future merge or cleanup.
+`npm run validate`, `npm run test:requirements` (62/62), `npm run test:composer-sanitizer` và `npm run test:mobile` đã PASS. `npm test` BLOCKED do thiếu `postal-mime`. Browser E2E BLOCKED bởi chính sách chặn `127.0.0.1`. Email thật, build Windows và production chưa chạy.

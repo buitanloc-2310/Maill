@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 
 const CHROME = process.env.CHROMIUM_PATH || ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].find(p => fs.existsSync(p));
 const SOURCE = path.resolve(__dirname, '../public/v5.js');
+const MAIL_SOURCE = path.resolve(__dirname, '../public/app.js');
 
 async function command(ws, method, params = {}) {
   const id = ++command.nextId;
@@ -25,12 +26,17 @@ command.pending = new Map();
 async function main() {
   if (!CHROME) throw new Error('Chromium/Chrome not found; set CHROMIUM_PATH to a browser executable');
   const source = await fsp.readFile(SOURCE, 'utf8');
+  const mailSource = await fsp.readFile(MAIL_SOURCE, 'utf8');
   const catalog = JSON.parse(await fsp.readFile(path.resolve(__dirname, '../public/library/compose-library.json'), 'utf8'));
   const builtinTemplates = await Promise.all((catalog.templates || []).filter(t => t.file).map(async t => ({ name: t.name, html: await fsp.readFile(path.resolve(__dirname, '../public', t.file.replace(/^\/+/, '')), 'utf8') })));
   const start = source.indexOf('  function sanitizeComposerHtml(html=\'\'){');
   const end = source.indexOf('  function sanitizeClipboardHtml(html=\'\')', start);
   if (start < 0 || end <= start) throw new Error('Cannot locate composer sanitizer in public/v5.js');
   const sanitizer = source.slice(start, end).trim();
+  const mailStart = mailSource.indexOf('function prepareMailHtml(html){');
+  const mailEnd = mailSource.indexOf('\nasync function openMessage(', mailStart);
+  if (mailStart < 0 || mailEnd <= mailStart) throw new Error('Cannot locate received-email HTML renderer in public/app.js');
+  const mailRenderer = mailSource.slice(mailStart, mailEnd).trim();
   const profile = await fsp.mkdtemp(path.join(os.tmpdir(), 'sfm-sanitizer-chrome-'));
   let chrome, ws;
   try {
@@ -83,7 +89,14 @@ async function main() {
     if (value.xss || failed.length || badTemplates.length || !value.safeLink || !value.formatting || !value.plainText) {
       throw new Error(`Composer sanitizer smoke failed: ${JSON.stringify({ ...value, failed }, null, 2)}`);
     }
-    console.log(JSON.stringify({ result: 'PASS', mode: 'actual Chromium DOMParser', checks: { blockedActiveMarkup: true, strippedEventHandlers: true, rejectedUnsafeUrls: true, rejectedSvgDataImage: true, removedUnsafeCss: true, safeLinksKept: true, emailFormattingKept: true, textKept: true }, builtInTemplateCount: value.templateChecks.length, builtInTemplates: value.templateChecks, output: value.html }, null, 2));
+    const remoteContent = '<p>Remote content test</p><img src="https://images.example.test/hero.png" srcset="https://images.example.test/hero-2x.png 2x, javascript:globalThis.__mailXss=8 3x" onerror="globalThis.__mailXss=1"><img src="http://images.example.test/legacy.png"><table background="https://images.example.test/background.png"><tr><td>Background</td></tr></table><a href="https://example.com/help" onclick="globalThis.__mailXss=2">Help</a><a href="javascript:globalThis.__mailXss=3">unsafe</a><script>globalThis.__mailXss=4</script><svg onload="globalThis.__mailXss=5"></svg>';
+    const mailExpression = `(()=>{${mailRenderer};const out=prepareMailHtml(${JSON.stringify(remoteContent)});const doc=new DOMParser().parseFromString(out.html,'text/html');const images=[...doc.querySelectorAll('img')];const link=doc.querySelector('a[href="https://example.com/help"]');return {html:out.html,httpsImageKept:images.some(x=>x.getAttribute('src')==='https://images.example.test/hero.png'),httpImageKept:images.some(x=>x.getAttribute('src')==='http://images.example.test/legacy.png'),imageCount:images.length,srcsetSafe:!!images[0]?.getAttribute('srcset')&&images[0].getAttribute('srcset').includes('https://images.example.test/hero-2x.png 2x')&&!/javascript:/i.test(images[0].getAttribute('srcset')),backgroundImageKept:doc.querySelector('table[background="https://images.example.test/background.png"]')!==null,safeLinkKept:!!link&&link.target==='_blank'&&/noopener/.test(link.rel)&&/noreferrer/.test(link.rel)&&!link.hasAttribute('onclick'),unsafeLinkRemoved:!doc.querySelector('a[href^="javascript:" i]'),activeMarkupRemoved:!doc.querySelector('script,svg,iframe,object,embed'),eventHandlersRemoved:![...doc.querySelectorAll('*')].some(el=>[...el.attributes].some(a=>/^on/i.test(a.name))),xss:globalThis.__mailXss||null}})()`;
+    const mailResultPacket = await command(ws, 'Runtime.evaluate', { expression: mailExpression, returnByValue: true, awaitPromise: true });
+    const mailResult = mailResultPacket.result?.value;
+    if (!mailResult || !mailResult.httpsImageKept || !mailResult.httpImageKept || !mailResult.srcsetSafe || !mailResult.backgroundImageKept || !mailResult.safeLinkKept || !mailResult.unsafeLinkRemoved || !mailResult.activeMarkupRemoved || !mailResult.eventHandlersRemoved || mailResult.xss) {
+      throw new Error(`Received-email remote content smoke failed: ${JSON.stringify({mailResult,packet:mailResultPacket}, null, 2)}`);
+    }
+    console.log(JSON.stringify({ result: 'PASS', mode: 'actual Chromium DOMParser', checks: { blockedActiveMarkup: true, strippedEventHandlers: true, rejectedUnsafeUrls: true, rejectedSvgDataImage: true, removedUnsafeCss: true, safeLinksKept: true, emailFormattingKept: true, textKept: true, receivedHttpImagesLoadByDefault: mailResult.httpImageKept && mailResult.httpsImageKept, responsiveSrcsetKeptSafely: mailResult.srcsetSafe, legacyBackgroundImageKeptSafely: mailResult.backgroundImageKept, externalLinksKeptSafely: mailResult.safeLinkKept, receivedEmailActiveMarkupBlocked: mailResult.activeMarkupRemoved && mailResult.eventHandlersRemoved }, builtInTemplateCount: value.templateChecks.length, builtInTemplates: value.templateChecks, receivedEmailRemoteContent: mailResult, output: value.html }, null, 2));
   } finally {
     for (const pending of command.pending.values()) { clearTimeout(pending.timeout); pending.reject(new Error('Browser test finished')); }
     command.pending.clear();

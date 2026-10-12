@@ -37,7 +37,7 @@ function messageDetail() {
     subject: 'Kiểm thử giao diện · tiếng Việt', is_read: 0, is_starred: 0, is_important: 0,
     received_at: '2026-10-12T00:00:00.000Z', parsed: {
       subject: 'Kiểm thử giao diện · tiếng Việt', text: 'Nội dung thư kiểm thử',
-      html: '<h2>Thư kiểm thử</h2><p>Tiếng Việt: Xin chào.</p><img src="https://image.invalid/tracker.png" onerror="window.__sfmXss=1"><script>window.__sfmXss=2</script><a href="javascript:window.__sfmXss=3">Liên kết không an toàn</a>',
+      html: '<h2>Thư kiểm thử</h2><p>Tiếng Việt: Xin chào.</p><img src="https://image.invalid/tracker.png" onerror="window.__sfmXss=1"><script>window.__sfmXss=2</script><a href="javascript:window.__sfmXss=3">Liên kết không an toàn</a><a href="https://example.com/help" onclick="window.__sfmXss=4">Liên kết ngoài an toàn</a>',
       attachments: []
     }
   } };
@@ -204,13 +204,13 @@ async function main() {
     const readerDeadline = Date.now() + 5000;
     while (Date.now() < readerDeadline) {
       try {
-        reader = await cdp.evaluate(`(()=>{const doc=document;const meta=doc.querySelector('meta[http-equiv="Content-Security-Policy" i]');return {hasCsp:!!meta&&/script-src 'none'/.test(meta.content),hasScript:!!doc.querySelector('script'),hasEventHandler:[...doc.querySelectorAll('*')].some(el=>[...el.attributes].some(a=>/^on/i.test(a.name))),unsafeHref:!!doc.querySelector('a[href^="javascript:" i]'),remoteImageHasSrc:!!doc.querySelector('img[src^="https://image.invalid"]'),readerTitle:doc.body?.textContent?.trim().slice(0,100)||''}})()`, iframeContextId);
+        reader = await cdp.evaluate(`(()=>{const doc=document;const meta=doc.querySelector('meta[http-equiv="Content-Security-Policy" i]');return {hasCsp:!!meta&&/script-src 'none'/.test(meta.content),remoteImagePolicy:!!meta&&/img-src[^;]*https:[^;]*http:|img-src[^;]*http:[^;]*https:/i.test(meta.content),hasScript:!!doc.querySelector('script'),hasEventHandler:[...doc.querySelectorAll('*')].some(el=>[...el.attributes].some(a=>/^on/i.test(a.name))),unsafeHref:!!doc.querySelector('a[href^="javascript:" i]'),remoteImageHasSrc:!!doc.querySelector('img[src^="https://image.invalid"]'),safeExternalLink:(()=>{const a=doc.querySelector('a[href="https://example.com/help"]');return !!a&&a.target==='_blank'&&/noopener/.test(a.rel)&&!a.hasAttribute('onclick')})(),readerTitle:doc.body?.textContent?.trim().slice(0,100)||''}})()`, iframeContextId);
         if (reader?.readerTitle.includes('Thư kiểm thử')) break;
       } catch {}
       await new Promise(r => setTimeout(r, 100));
     }
     if (!reader?.readerTitle.includes('Thư kiểm thử')) throw new Error(`Sanitized email body did not render in the sandboxed iframe: ${JSON.stringify(reader)}`);
-    if (!reader.hasCsp || reader.hasScript || reader.hasEventHandler || reader.unsafeHref || reader.remoteImageHasSrc) throw new Error(`Email reader security smoke failed: ${JSON.stringify(reader)}`);
+    if (!reader.hasCsp || !reader.remoteImagePolicy || reader.hasScript || reader.hasEventHandler || reader.unsafeHref || !reader.remoteImageHasSrc || !reader.safeExternalLink) throw new Error(`Email reader image/link policy smoke failed: ${JSON.stringify(reader)}`);
     await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true }).then(r => fs.writeFileSync(path.join(OUT, 'mail-reader.png'), Buffer.from(r.data, 'base64')));
     await cdp.evaluate("document.querySelector('#compose').click(); true");
     await cdp.waitFor("document.querySelector('#v5-to') !== null", 'Mail Studio composer');

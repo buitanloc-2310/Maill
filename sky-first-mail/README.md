@@ -21,7 +21,7 @@ Sky First Mail v3 là bản nâng cấp theo hướng **webmail thực thụ**, 
 
 ## Cấu trúc ZIP
 
-Thư mục gốc dự án đang hoạt động là `Maill-main/sky-first-mail/` (nơi có `package.json`, `wrangler.jsonc`, `src/`, `public/` và `migrations/`). Thư mục lồng `sky-first-mail/sky-first-mail/` là bản cây cũ trùng tên trong ZIP đầu vào; không chạy deploy từ thư mục lồng đó. Bản sửa hiện tại giữ nguyên thư mục lồng để tránh xóa mã nguồn lịch sử.
+Gói phát hành sạch chỉ chứa một cây dự án `Sky-First-Mail/`, nơi có `package.json`, `wrangler.jsonc`, `src/`, `public/` và `migrations/`. Snapshot cũ được giữ ngoài gói phát hành để tránh nhầm lẫn và không bị trộn vào mã nguồn đang chạy.
 
 ## Luồng mail
 - Nhận: Internet -> Cloudflare Email Routing -> `email()` -> R2 raw MIME + D1 metadata
@@ -44,7 +44,7 @@ Dữ liệu nặng (raw email, attachment, avatar) nằm ở **R2**. D1 giữ me
 ## Lưu ý
 Không xóa D1/R2 hiện tại khi nâng cấp. `ensureSchema()` tự bổ sung schema cần thiết. Không commit `RESEND_API_KEY` vào repository.
 
-## Kiểm thử phát hành R5
+## Kiểm thử và phát hành
 
 - Chạy `npm run test:composer-sanitizer` để kiểm thử bộ làm sạch HTML trong Chromium mà không cần truy cập mạng.
 - Chạy `npm run test:browser` để chạy sanitizer smoke trước, rồi kiểm thử giao diện Chromium bằng API giả lập cô lập (không gửi email thật).
@@ -55,3 +55,10 @@ Không xóa D1/R2 hiện tại khi nâng cấp. `ensureSchema()` tự bổ sung 
 ## R6 mobile webmail verification
 
 R6 improves phone navigation, reader sizing and Mail Studio responsive layout, and adds a network-free Chromium check. Run `npm run test:mobile` to test the real frontend with an isolated mock API. See [`docs/MOBILE-RESPONSIVE-R6.md`](docs/MOBILE-RESPONSIVE-R6.md) and [`AUDIT-AND-FIX-R6-20261012.md`](AUDIT-AND-FIX-R6-20261012.md) for scope and limitations. A mocked composer send is not evidence of real email delivery.
+
+
+## Ảnh và liên kết bên ngoài trong email nhận
+
+- Ảnh HTTP/HTTPS trong `<img src>`, các ứng viên URL an toàn trong `srcset` và thuộc tính `background` HTML cũ của email nhận được hiển thị tự động. `srcset` chỉ giữ ứng viên HTTP/HTTPS hoặc đường dẫn an toàn; `background` chỉ giữ URL HTTP/HTTPS hoặc đường dẫn cùng nguồn. Khung email vẫn chặn script, event handler, biểu mẫu, iframe nhúng và CSS có `url()`/`@import`; CSP chỉ cho phép ảnh same-origin, HTTP/HTTPS và ảnh raster data URI.
+- Liên kết HTTP/HTTPS, `mailto:` và `tel:` được giữ lại nếu an toàn, mở trong tab/cửa sổ riêng với `noopener noreferrer nofollow`. Giao thức nguy hiểm vẫn bị loại bỏ.
+- Yêu cầu ảnh ngoài tự động tải đồng nghĩa máy chủ ảnh của người gửi có thể ghi nhận địa chỉ IP/thời điểm tải ảnh hoặc dùng ảnh theo dõi. Khung thư đặt `referrerpolicy=no-referrer` để không gửi URL nguồn làm referrer; điều này không ngăn được việc máy chủ ảnh nhận yêu cầu.
