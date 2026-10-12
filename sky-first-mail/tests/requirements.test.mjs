@@ -268,7 +268,7 @@ test('draft save validates existing records before R2 writes and preserves attac
 
 test('account deletion executes dependent row removals in one database batch before auditing and R2 cleanup', () => {
   const api = read('../src/index.js');
-  const start = api.indexOf('// Keep database deletion atomic:');
+  const start = api.indexOf('// D1 batch keeps dependent-row deletion');
   const end = api.indexOf("return json({ok:true,deleted:true})", start);
   const block = api.slice(start, end);
   assert.match(block, /await env\.DB\.batch\(\[/);
@@ -513,7 +513,7 @@ test('account removal guards dependent deletes and final Super Admin deletion in
   const api = read('../src/index.js');
   assert.match(api, /EXISTS \(SELECT 1 FROM users WHERE id=\? AND \$\{canDeleteSql\}\)/);
   assert.match(api, /DELETE FROM users WHERE id=\? AND \$\{canDeleteSql\}/);
-  assert.match(api, /results\?\.\[2\]\?\.meta\?\.changes/);
+  assert.match(api, /results\?\.\[6\]\?\.meta\?\.changes/);
 });
 
 test('R2 cleanup retains objects referenced by a send operation', () => {

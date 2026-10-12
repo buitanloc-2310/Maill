@@ -595,8 +595,9 @@ async function routeApi(request,env){
         ]);
         const id=Number(results?.[0]?.meta?.last_row_id||0);
         if(!id)throw new Error('Không xác định được ID tài khoản vừa tạo.');
-        await notify(env,id,'Tài khoản Sky First đã được tạo',`Địa chỉ: ${email}`,'account');
-        await audit(env,user.id,'admin.user.created','user',id,{email});
+        // Once the account/mailbox transaction has committed, best-effort notifications or audit must not report a false create failure.
+        try{await notify(env,id,'Tài khoản Sky First đã được tạo',`Địa chỉ: ${email}`,'account')}catch(error){console.error('ADMIN_USER_CREATE_NOTIFY_FAILED',{id,message:error?.message||String(error)})}
+        try{await audit(env,user.id,'admin.user.created','user',id,{email})}catch(error){console.error('ADMIN_USER_CREATE_AUDIT_FAILED',{id,actorUserId:user.id,message:error?.message||String(error)})}
         return json({ok:true,id});
       }catch(e){if(String(e).toLowerCase().includes('unique'))return badRequest('Email hoặc địa chỉ mailbox đã tồn tại.');throw e}
     }
@@ -613,9 +614,9 @@ async function routeApi(request,env){
         // Count protection must live inside UPDATE, not in a separate SELECT: concurrent edits must not demote the last root.
         const update=await env.DB.prepare(`UPDATE users SET ${[...f,'updated_at=CURRENT_TIMESTAMP'].join(',')} WHERE id=? AND role='super_admin' AND status='active' AND (SELECT count(*) FROM users WHERE role='super_admin' AND status='active')>1`).bind(...v,id).run();
         if(Number(update.meta?.changes||0)!==1)return badRequest('Không thể thay đổi vai trò hoặc trạng thái Siêu quản trị viên cuối cùng đang hoạt động.');
-        await notify(env,id,'Quyền tài khoản đã được cập nhật','Quản trị viên vừa thay đổi cài đặt tài khoản của bạn.','account');await audit(env,user.id,'admin.user.updated','user',id,b);return json({ok:true});
+        try{await notify(env,id,'Quyền tài khoản đã được cập nhật','Quản trị viên vừa thay đổi cài đặt tài khoản của bạn.','account')}catch(error){console.error('ADMIN_USER_UPDATE_NOTIFY_FAILED',{id,message:error?.message||String(error)})}try{await audit(env,user.id,'admin.user.updated','user',id,b)}catch(error){console.error('ADMIN_USER_UPDATE_AUDIT_FAILED',{id,actorUserId:user.id,message:error?.message||String(error)})}return json({ok:true});
       }
-      f.push('updated_at=CURRENT_TIMESTAMP');const update=await env.DB.prepare(`UPDATE users SET ${f.join(',')} WHERE id=?`).bind(...v,id).run();if(Number(update.meta?.changes||0)!==1)return notFound('Tài khoản không còn tồn tại hoặc đã thay đổi.');await notify(env,id,'Quyền tài khoản đã được cập nhật','Quản trị viên vừa thay đổi cài đặt tài khoản của bạn.','account');await audit(env,user.id,'admin.user.updated','user',id,b);return json({ok:true})
+      f.push('updated_at=CURRENT_TIMESTAMP');const update=await env.DB.prepare(`UPDATE users SET ${f.join(',')} WHERE id=?`).bind(...v,id).run();if(Number(update.meta?.changes||0)!==1)return notFound('Tài khoản không còn tồn tại hoặc đã thay đổi.');try{await notify(env,id,'Quyền tài khoản đã được cập nhật','Quản trị viên vừa thay đổi cài đặt tài khoản của bạn.','account')}catch(error){console.error('ADMIN_USER_UPDATE_NOTIFY_FAILED',{id,message:error?.message||String(error)})}try{await audit(env,user.id,'admin.user.updated','user',id,b)}catch(error){console.error('ADMIN_USER_UPDATE_AUDIT_FAILED',{id,actorUserId:user.id,message:error?.message||String(error)})}return json({ok:true})
     }
     if(aum&&request.method==='DELETE'){
       const id=Number(aum[1]);
@@ -625,32 +626,44 @@ async function routeApi(request,env){
       if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được xóa tài khoản quản trị.');
       const b=await bodyJson(request);if(b.confirm!==true && normalizeEmail(b.confirmEmail)!==normalizeEmail(target.email))return badRequest('Yêu cầu xác nhận xóa không hợp lệ. Hãy xác nhận trong giao diện quản trị rồi thử lại.');
       const canDeleteSql=`(role<>'super_admin' OR status<>'active' OR (SELECT count(*) FROM users WHERE role='super_admin' AND status='active')>1)`;
-      const objects=[];
-      // Inventory all data owned by the account before removing rows; message.mailbox_id uses SET NULL,
-      // so explicitly deleting the account's own messages is necessary to avoid orphaned mail metadata.
-      const inventory=await env.DB.prepare(`SELECT storage_key FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND storage_key IS NOT NULL
-        UNION SELECT a.storage_key FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND a.storage_key IS NOT NULL
-        UNION SELECT avatar_key storage_key FROM users WHERE id=? AND avatar_key IS NOT NULL
-        UNION SELECT cover_key storage_key FROM users WHERE id=? AND cover_key IS NOT NULL
-        UNION SELECT storage_key FROM compose_drafts WHERE user_id=? AND storage_key IS NOT NULL
-        UNION SELECT storage_key FROM send_operations WHERE user_id=? AND storage_key IS NOT NULL`).bind(id,id,id,id,id,id).all();
-      for(const r of inventory.results||[])if(r.storage_key)objects.push(r.storage_key);
-      // Keep database deletion atomic: a failed FK or query must not erase mail rows while leaving the account.
-      // All three statements use the same SQL guard. If concurrent requests race to remove the last root,
-      // no dependent mail/send-operation rows are deleted unless the guarded user deletion is allowed.
-      const guard=`EXISTS (SELECT 1 FROM users WHERE id=? AND ${canDeleteSql})`;
-      const results=await env.DB.batch([
-        env.DB.prepare(`DELETE FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND ${guard}`).bind(id,id),
-        env.DB.prepare(`DELETE FROM send_operations WHERE user_id=? AND ${guard}`).bind(id,id),
-        env.DB.prepare(`DELETE FROM login_history WHERE user_id=? AND ${guard}`).bind(id,id),
-        env.DB.prepare(`DELETE FROM mail_templates WHERE user_id=? AND ${guard}`).bind(id,id),
-        env.DB.prepare(`DELETE FROM compose_drafts WHERE user_id=? AND ${guard}`).bind(id,id),
-        env.DB.prepare(`DELETE FROM users WHERE id=? AND ${canDeleteSql}`).bind(id)
-      ]);
-      if(Number(results?.[5]?.meta?.changes||0)!==1)return badRequest('Không thể xóa Siêu quản trị viên cuối cùng đang hoạt động.');
-      await audit(env,user.id,'admin.user.deleted','user',id,{email:target.email});
-      for(const key of [...new Set(objects)])await deleteObjectIfUnreferenced(env,key);
-      return json({ok:true,deleted:true});
+      const objects=[];let deleteStage='inventory',results;
+      try{
+        const inventory=await env.DB.prepare(`SELECT storage_key FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND storage_key IS NOT NULL
+          UNION SELECT a.storage_key FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND a.storage_key IS NOT NULL
+          UNION SELECT avatar_key storage_key FROM users WHERE id=? AND avatar_key IS NOT NULL
+          UNION SELECT cover_key storage_key FROM users WHERE id=? AND cover_key IS NOT NULL
+          UNION SELECT storage_key FROM compose_drafts WHERE user_id=? AND storage_key IS NOT NULL
+          UNION SELECT storage_key FROM send_operations WHERE user_id=? AND storage_key IS NOT NULL`).bind(id,id,id,id,id,id).all();
+        for(const r of inventory.results||[])if(r.storage_key)objects.push(r.storage_key);
+        deleteStage='database-transaction';
+        // D1 batch keeps dependent-row deletion and the guarded user DELETE in one atomic transaction.
+        const guard=`EXISTS (SELECT 1 FROM users WHERE id=? AND ${canDeleteSql})`;
+        results=await env.DB.batch([
+          env.DB.prepare(`DELETE FROM inbound_receipts WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND ${guard}`).bind(id,id),
+          env.DB.prepare(`DELETE FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND ${guard}`).bind(id,id),
+          env.DB.prepare(`DELETE FROM send_operations WHERE user_id=? AND ${guard}`).bind(id,id),
+          env.DB.prepare(`DELETE FROM login_history WHERE user_id=? AND ${guard}`).bind(id,id),
+          env.DB.prepare(`DELETE FROM mail_templates WHERE user_id=? AND ${guard}`).bind(id,id),
+          env.DB.prepare(`DELETE FROM compose_drafts WHERE user_id=? AND ${guard}`).bind(id,id),
+          env.DB.prepare(`DELETE FROM users WHERE id=? AND ${canDeleteSql}`).bind(id)
+        ]);
+        if(Number(results?.[6]?.meta?.changes||0)!==1)return badRequest('Không thể xóa Siêu quản trị viên cuối cùng đang hoạt động.');
+      }catch(error){
+        const raw=String(error?.message||error||'');
+        const code=/foreign key/i.test(raw)?'ADMIN_DELETE_FK':/no such (table|column)/i.test(raw)?'ADMIN_DELETE_SCHEMA':/unique constraint/i.test(raw)?'ADMIN_DELETE_CONFLICT':'ADMIN_DELETE_FAILED';
+        const safeMessage=code==='ADMIN_DELETE_FK'?'Cơ sở dữ liệu còn dữ liệu liên kết chưa được xử lý. Không có xác nhận xóa; hãy kiểm tra nhật ký máy chủ.':code==='ADMIN_DELETE_SCHEMA'?'Cấu trúc cơ sở dữ liệu chưa đồng bộ. Cần áp dụng các migration còn thiếu trước khi xóa.':code==='ADMIN_DELETE_CONFLICT'?'Dữ liệu tài khoản đang xung đột với bản ghi khác.':'Máy chủ từ chối giao dịch xóa. Tài khoản chỉ được coi là đã xóa khi API trả kết quả thành công.';
+        console.error('ADMIN_USER_DELETE_FAILED',{id,actorUserId:user.id,stage:deleteStage,code,message:raw,stack:error?.stack||''});
+        return json({ok:false,deleted:false,code,error:safeMessage},500);
+      }
+      // The user row is now deleted. Follow-up audit and object cleanup must never turn a committed deletion into a false failure.
+      try{await audit(env,user.id,'admin.user.deleted','user',id,{email:target.email})}
+      catch(error){console.error('ADMIN_USER_DELETE_AUDIT_FAILED',{id,actorUserId:user.id,message:error?.message||String(error)})}
+      let cleanupWarnings=0;
+      for(const key of [...new Set(objects)]){
+        try{await deleteObjectIfUnreferenced(env,key)}
+        catch(error){cleanupWarnings++;console.error('ADMIN_USER_POST_DELETE_CLEANUP_FAILED',{id,key,message:error?.message||String(error)})}
+      }
+      return json({ok:true,deleted:true,cleanupWarnings});
     }
     const reset=path.match(/^\/api\/admin\/users\/(\d+)\/reset-password$/);if(reset&&request.method==='POST'){
       const id=Number(reset[1]),target=await env.DB.prepare(`SELECT id,role FROM users WHERE id=?`).bind(id).first();
@@ -658,7 +671,7 @@ async function routeApi(request,env){
       if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được quản lý mật khẩu tài khoản quản trị.');
       const b=await bodyJson(request),p=String(b.password||'');if(p.length<10||p.length>1024)return badRequest('Mật khẩu phải từ 10 đến 1.024 ký tự.');
       const hp=await hashPassword(p);await env.DB.prepare(`UPDATE users SET password_salt=?,password_hash=?,password_iterations=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(hp.salt,hp.hash,hp.iterations,id).run();
-      await env.DB.prepare(`DELETE FROM sessions WHERE user_id=?`).bind(id).run();await notify(env,id,'Mật khẩu đã được đặt lại','Quản trị viên đã đặt lại mật khẩu tài khoản.','security');await audit(env,user.id,'admin.password.reset','user',id);return json({ok:true})
+      await env.DB.prepare(`DELETE FROM sessions WHERE user_id=?`).bind(id).run();try{await notify(env,id,'Mật khẩu đã được đặt lại','Quản trị viên đã đặt lại mật khẩu tài khoản.','security')}catch(error){console.error('ADMIN_PASSWORD_RESET_NOTIFY_FAILED',{id,message:error?.message||String(error)})}try{await audit(env,user.id,'admin.password.reset','user',id)}catch(error){console.error('ADMIN_PASSWORD_RESET_AUDIT_FAILED',{id,actorUserId:user.id,message:error?.message||String(error)})}return json({ok:true})
     }
     if(path==='/api/admin/aliases'&&request.method==='GET'){const r=await env.DB.prepare(`SELECT a.*,mb.address mailbox_address,u.display_name FROM aliases a JOIN mailboxes mb ON mb.id=a.mailbox_id JOIN users u ON u.id=mb.user_id ORDER BY a.created_at DESC`).all();return json({ok:true,aliases:r.results||[]})}
     if(path==='/api/admin/aliases'&&request.method==='POST'){const b=await bodyJson(request),addr=normalizeEmail(b.address),mbid=Number(b.mailboxId||0);if(!validEmail(addr)||!mbid)return badRequest('Dữ liệu alias không hợp lệ.');const aliasDomain=addr.split('@')[1]||'';const allowedAliasDomain=await env.DB.prepare(`SELECT id FROM managed_domains WHERE lower(domain)=lower(?) LIMIT 1`).bind(aliasDomain).first();if(!allowedAliasDomain)return badRequest('Tên miền alias chưa được thêm trong Quản trị > Tên miền.');try{const r=await env.DB.prepare(`INSERT INTO aliases(mailbox_id,address,is_active) VALUES(?,?,1)`).bind(mbid,addr).run();await audit(env,user.id,'admin.alias.created','alias',r.meta.last_row_id,{address:addr,mailboxId:mbid});return json({ok:true,id:r.meta.last_row_id})}catch{return badRequest('Alias đã tồn tại hoặc mailbox không hợp lệ.')}}
@@ -773,8 +786,15 @@ export default {
       }
       return env.ASSETS.fetch(request)
     }catch(e){
-      console.error('APP_ERROR',{message:e?.message||String(e),stack:e?.stack||''});
-      return json({ok:false,error:'Sky First Mail chưa thể hoàn tất yêu cầu. Vui lòng thử lại.'},500)
+      const raw=String(e?.message||e||'');
+      let routePath='';try{routePath=new URL(request.url).pathname}catch{}
+      console.error('APP_ERROR',{method:request.method,path:routePath,message:raw,stack:e?.stack||''});
+      if(routePath.startsWith('/api/admin/users')){
+        const code=/foreign key/i.test(raw)?'ADMIN_USER_FK':/no such (table|column)/i.test(raw)?'ADMIN_USER_SCHEMA':/unique constraint/i.test(raw)?'ADMIN_USER_DUPLICATE':'ADMIN_USER_WRITE_FAILED';
+        const error=code==='ADMIN_USER_FK'?'Cơ sở dữ liệu đang còn dữ liệu liên kết; thay đổi đã bị từ chối.':code==='ADMIN_USER_SCHEMA'?'Cơ sở dữ liệu chưa đồng bộ với mã nguồn hiện tại.':code==='ADMIN_USER_DUPLICATE'?'Email hoặc dữ liệu tài khoản đã tồn tại.':'Máy chủ gặp lỗi khi xử lý tài khoản. Không coi thao tác là thành công nếu chưa có xác nhận.';
+        return json({ok:false,error,code},500)
+      }
+      return json({ok:false,error:'Sky First Mail chưa thể hoàn tất yêu cầu. Vui lòng thử lại.',code:'APP_REQUEST_FAILED'},500)
     }
   },
   async email(message,env,ctx){return handleInboundEmail(message,env,ctx)}
