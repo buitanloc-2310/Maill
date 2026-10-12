@@ -11,6 +11,18 @@ Sky First Mail v3 là bản nâng cấp theo hướng **webmail thực thụ**, 
 - R2 binding: `MAIL_STORAGE` -> `sky-first-mail-storage`
 - Secret gửi ngoài: `RESEND_API_KEY`
 
+## Thiết lập an toàn lần đầu
+
+- Trước khi khởi tạo tài khoản quản trị lần đầu, cấu hình secret `SETUP_SECRET` trên Cloudflare Worker bằng `npx wrangler secret put SETUP_SECRET` (dùng chuỗi ngẫu nhiên dài ít nhất 24 ký tự).
+- Khi mở màn hình thiết lập lần đầu, nhập chính secret đó vào trường **Khóa thiết lập hệ thống**. Secret được gửi trong header `x-setup-secret`; không đưa secret vào mã frontend, tệp `.js`, Git hoặc tài liệu công khai.
+- Với môi trường local, lưu secret trong `.dev.vars` không commit vào Git. Không dùng secret mẫu hoặc secret kiểm thử trong production.
+- Nếu secret chưa được cấu hình hoặc quá ngắn, endpoint bootstrap sẽ từ chối khởi tạo. Đây là hành vi fail-closed có chủ đích.
+- Sau khi thay đổi mã nguồn, chạy `npm ci`, `npm run validate`, `npm test` và `npm run test:requirements`. Không chạy migration hoặc deploy production chỉ để kiểm thử cục bộ.
+
+## Cấu trúc ZIP
+
+Thư mục gốc dự án đang hoạt động là `Maill-main/sky-first-mail/` (nơi có `package.json`, `wrangler.jsonc`, `src/`, `public/` và `migrations/`). Thư mục lồng `sky-first-mail/sky-first-mail/` là bản cây cũ trùng tên trong ZIP đầu vào; không chạy deploy từ thư mục lồng đó. Bản sửa hiện tại giữ nguyên thư mục lồng để tránh xóa mã nguồn lịch sử.
+
 ## Luồng mail
 - Nhận: Internet -> Cloudflare Email Routing -> `email()` -> R2 raw MIME + D1 metadata
 - Gửi ngoài: Sky First Mail -> Resend API -> Gmail/Outlook/Internet
@@ -31,3 +43,15 @@ Dữ liệu nặng (raw email, attachment, avatar) nằm ở **R2**. D1 giữ me
 
 ## Lưu ý
 Không xóa D1/R2 hiện tại khi nâng cấp. `ensureSchema()` tự bổ sung schema cần thiết. Không commit `RESEND_API_KEY` vào repository.
+
+## Kiểm thử phát hành R5
+
+- Chạy `npm run test:composer-sanitizer` để kiểm thử bộ làm sạch HTML trong Chromium mà không cần truy cập mạng.
+- Chạy `npm run test:browser` để chạy sanitizer smoke trước, rồi kiểm thử giao diện Chromium bằng API giả lập cô lập (không gửi email thật).
+- Xem `FINAL_RELEASE_GATE.md` và `docs/PRODUCTION-SMOKE-TESTS.md` trước khi chạy kiểm thử gửi/nhận thật hoặc tạo bộ cài Windows.
+- Kiểm thử email thật yêu cầu tài khoản và hộp thư thử nghiệm do người vận hành kiểm soát; không tự động chạy trong CI.
+
+
+## R6 mobile webmail verification
+
+R6 improves phone navigation, reader sizing and Mail Studio responsive layout, and adds a network-free Chromium check. Run `npm run test:mobile` to test the real frontend with an isolated mock API. See [`docs/MOBILE-RESPONSIVE-R6.md`](docs/MOBILE-RESPONSIVE-R6.md) and [`AUDIT-AND-FIX-R6-20261012.md`](AUDIT-AND-FIX-R6-20261012.md) for scope and limitations. A mocked composer send is not evidence of real email delivery.

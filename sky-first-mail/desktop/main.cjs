@@ -30,8 +30,9 @@ function createWindow() {
     }
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+  const externalProtocols = new Set(['https:', 'http:', 'mailto:', 'tel:']);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    try { const u = new URL(url); if (['https:', 'http:'].includes(u.protocol)) shell.openExternal(u.href); } catch {}
+    try { const u = new URL(url); if (externalProtocols.has(u.protocol)) shell.openExternal(u.href).catch(() => {}); } catch {}
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -39,7 +40,7 @@ function createWindow() {
       const next = new URL(url);
       if (next.origin !== trustedOrigin()) {
         event.preventDefault();
-        if (['https:', 'http:'].includes(next.protocol)) shell.openExternal(next.href).catch(() => {});
+        if (externalProtocols.has(next.protocol)) shell.openExternal(next.href).catch(() => {});
       }
     } catch { event.preventDefault(); }
   });

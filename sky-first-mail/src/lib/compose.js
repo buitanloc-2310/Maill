@@ -1,8 +1,9 @@
 import {json,badRequest} from './http.js';
 import {buildMime,cleanEmailHtml} from './mail.js';
 import {fingerprint,digest} from './reliability.js';
+import {isAllowedAvatarImage} from './content-policy.js';
 const email=value=>String(value||'').trim().toLowerCase();
-const valid=value=>/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value);
+const valid=value=>String(value||'').length<=254&&/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(value||'');
 const list=value=>[...new Set(String(value||'').split(/[;,]/).map(email).filter(Boolean))];
 export async function reliableCompose(request,env,user,services){
  const form=await request.formData();
@@ -17,13 +18,15 @@ export async function reliableCompose(request,env,user,services){
  if([...attachments,...inlineAttachments].reduce((n,x)=>n+x.size,0)>12*1024*1024)return badRequest('Tổng tệp và ảnh nội tuyến tối đa 12 MB.');
  if(attachments.length+inlineAttachments.length>100)return badRequest('Mỗi thư tối đa 100 tệp, trong giới hạn tổng dung lượng 12 MB.');
  let inlineCidMap=[];try{inlineCidMap=JSON.parse(String(form.get('inlineCidMap')||'[]'))}catch{}
- if(!Array.isArray(inlineCidMap)||inlineCidMap.some(x=>!x||!/^[-a-zA-Z0-9_.@]+$/.test(x.cid||'')))return badRequest('Mã ảnh nội tuyến không hợp lệ.');
- if(inlineAttachments.some(a=>!/^image\/(png|jpeg|gif|webp)$/.test(a.type)||!inlineCidMap.some(x=>x.name===a.name)))return badRequest('Ảnh nội tuyến phải là PNG, JPEG, GIF hoặc WebP và có mã nhúng hợp lệ.');
+ if(!Array.isArray(inlineCidMap)||inlineCidMap.length!==inlineAttachments.length||inlineCidMap.some((x,i)=>!x||String(x.name||'')!==String(inlineAttachments[i]?.name||'')||!/^[-a-zA-Z0-9_.@]{1,127}$/.test(x.cid||'')))return badRequest('Mã ảnh nội tuyến không hợp lệ.');
+ if(new Set(inlineCidMap.map(x=>x.cid)).size!==inlineCidMap.length)return badRequest('Mỗi ảnh nội tuyến phải có một mã CID riêng.');
+ if(inlineAttachments.some(a=>!/^image\/(png|jpeg|gif|webp)$/.test(String(a.type||'').split(';')[0].toLowerCase())))return badRequest('Ảnh nội tuyến phải là PNG, JPEG, GIF hoặc WebP.');
+ for(const a of inlineAttachments){if(!isAllowedAvatarImage(a.type,new Uint8Array(await a.arrayBuffer())))return badRequest('Nội dung ảnh nội tuyến không khớp với định dạng ảnh khai báo.');}
  const groups={to:[],cc:[],bcc:[]};
  for(const [kind,addresses] of Object.entries({to,cc,bcc}))for(const addr of addresses){const mb=await services.resolveMailbox(env,addr);groups[kind].push({addr,mb});}
  const external=kind=>groups[kind].filter(x=>!x.mb).map(x=>x.addr);
  const hasExternal=['to','cc','bcc'].some(k=>external(k).length);
- if(hasExternal){const domain=await env.DB.prepare('SELECT send_enabled,status,transport FROM managed_domains WHERE domain=? COLLATE NOCASE').bind(fromMb.sender_address.split('@')[1]).first();if(!domain?.send_enabled||domain.status==='disabled')return badRequest('Tên miền gửi chưa được bật hoặc transport chưa cấu hình.');}
+ if(hasExternal){const domain=await env.DB.prepare('SELECT send_enabled,status,transport FROM managed_domains WHERE domain=? COLLATE NOCASE').bind(fromMb.sender_address.split('@')[1]).first();if(!domain?.send_enabled||domain.status==='disabled')return badRequest('Tên miền gửi chưa được bật hoặc transport chưa cấu hình.');if(String(domain.transport||'resend').toLowerCase()==='resend'&&!external('to').length)return badRequest('Resend yêu cầu có ít nhất một địa chỉ ngoài hệ thống trong trường Đến. Để tránh gửi trùng cho người nhận nội bộ, hãy chuyển một người nhận ngoài vào Đến hoặc cấu hình MTA Gateway cho trường hợp chỉ có Cc/Bcc bên ngoài.');}
  const supplied=String(form.get('requestId')||request.headers.get('idempotency-key')||'');
  if(supplied && !/^[a-zA-Z0-9_-]{16,100}$/.test(supplied))return badRequest('Mã yêu cầu gửi không hợp lệ.');
  const id=`${user.id}_${supplied||crypto.randomUUID()}`,hash=await fingerprint(form);
@@ -42,7 +45,7 @@ export async function reliableCompose(request,env,user,services){
    const headers={};if(inReplyTo){headers['In-Reply-To']=inReplyTo;headers.References=references.join(' ');}if(priority==='high')headers['X-Priority']='1';
    await env.DB.prepare("UPDATE send_operations SET status='sending',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run();
    providerStarted=true;
-   const result=await services.sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:user.display_name||fromMb.display_name,to:external('to').length?external('to'):to,cc:external('cc'),bcc:external('bcc'),subject,html,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey:id});providerId=result.id;providerName=result.provider||'external';
+   const result=await services.sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:user.display_name||fromMb.display_name,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey:id});providerId=result.id;providerName=result.provider||'external';
    await env.DB.prepare("UPDATE send_operations SET provider_id=?,status='accepted',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(providerId,id).run();
   }
   const now=new Date().toISOString(),preview=(text||html.replace(/<[^>]+>/g,' ')).slice(0,180);
@@ -61,6 +64,6 @@ export async function reliableCompose(request,env,user,services){
   const status=providerId?'accepted_pending_local':providerStarted&&!error.definitive?'uncertain':'failed';
   try{await env.DB.prepare('UPDATE send_operations SET status=?,provider_id=COALESCE(?,provider_id),updated_at=CURRENT_TIMESTAMP WHERE id=?').bind(status,providerId,id).run();}catch{}
   console.error('SEND_OPERATION_FAILED',{operationId:id,status});
-  return json({ok:false,error:status==='failed'?'Chưa gửi được thư. Liên hệ quản trị viên cùng mã yêu cầu để kiểm tra.':'Chưa xác nhận đầy đủ kết quả gửi. Không gửi lại thư mới trước khi đối chiếu để tránh trùng.',operationId:id,status},502);
+  return json({ok:false,error:status==='failed'?(error.publicMessage||'Chưa gửi được thư. Liên hệ quản trị viên cùng mã yêu cầu để kiểm tra.'):'Chưa xác nhận đầy đủ kết quả gửi. Không gửi lại thư mới trước khi đối chiếu để tránh trùng.',operationId:id,status},502);
  }
 }

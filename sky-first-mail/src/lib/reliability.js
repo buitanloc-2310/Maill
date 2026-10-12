@@ -20,8 +20,11 @@ export async function boundedRequest(request,maxBytes){
  if(Number(request.headers.get('content-length')||0)>maxBytes)throw Object.assign(new Error('Yêu cầu quá lớn.'),{status:413});
  const reader=request.body?.getReader();if(!reader)return request;
  const chunks=[];let size=0;
- while(true){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>maxBytes){await reader.cancel();throw Object.assign(new Error('Yêu cầu quá lớn.'),{status:413});}chunks.push(value);}
- const data=new Uint8Array(size);let at=0;for(const c of chunks){data.set(c,at);at+=c.length;}
+ try{
+  while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>maxBytes)throw Object.assign(new Error('Yêu cầu quá lớn.'),{status:413});chunks.push(value);}
+ }catch(error){try{await reader.cancel(error)}catch{}throw error}
+ finally{try{reader.releaseLock()}catch{}}
+ const data=new Uint8Array(size);let at=0;for(const c of chunks){data.set(c,at);at+=c.byteLength;}
  return new Request(request.url,{method:request.method,headers:request.headers,body:data});
 }
 export function secureResponse(response){const h=new Headers(response.headers);h.set('x-content-type-options','nosniff');h.set('referrer-policy','no-referrer');h.set('x-frame-options','DENY');h.set('permissions-policy','camera=(), microphone=(), geolocation=()');return new Response(response.body,{status:response.status,headers:h});}
