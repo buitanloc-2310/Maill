@@ -349,3 +349,6 @@ body{background:linear-gradient(135deg,#eef8ff 0%,#f8fbff 46%,#edf5ff 100%)}
   .workspace>aside>.compose{flex:0 0 44px;width:44px;min-width:44px;height:48px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;padding:2px}
   .workspace>aside>.compose::after{content:"Soạn";font-size:8px;font-weight:850;line-height:1}
 }
+
+/* Accessible in-app confirmation for permanent account deletion */
+.delete-confirm{padding:8px 2px 2px;max-width:480px}.delete-confirm-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:14px;background:#fff0ef;color:#c62828;font-size:26px;font-weight:800;margin-bottom:14px}.delete-confirm h2{margin:0 0 12px}.delete-confirm p{line-height:1.6;color:var(--muted,#5d6b7c);margin:8px 0}.delete-confirm .account-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:22px}.delete-confirm .danger{background:#c62828;color:#fff;border:1px solid #c62828}.delete-confirm .danger:disabled{opacity:.65;cursor:wait}.delete-confirm .notice{margin-top:12px}
