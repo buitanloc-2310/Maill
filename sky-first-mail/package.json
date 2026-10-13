@@ -15,7 +15,8 @@
     "test:admin": "node scripts/admin-crud-smoke.cjs",
     "test:browser": "npm run test:composer-sanitizer && node scripts/browser-smoke.cjs",
     "test:composer-sanitizer": "node scripts/composer-sanitizer-smoke.cjs",
-    "test:mobile": "node scripts/mobile-layout-smoke.cjs"
+    "test:mobile": "node scripts/mobile-layout-smoke.cjs",
+    "test:admin-delete": "node scripts/admin-delete-integration-smoke.mjs"
   },
   "dependencies": {
     "postal-mime": "^2.4.3"

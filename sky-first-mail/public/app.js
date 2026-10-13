@@ -7,7 +7,8 @@ const fmt=n=>{n=Number(n||0);if(n<1024)return`${n} B`;if(n<1048576)return`${(n/1
 const roleLabel=r=>({user:'Người dùng',admin:'Quản trị viên',super_admin:'Siêu quản trị viên'}[r]||r);
 const statusLabel=r=>({active:'Hoạt động',disabled:'Đã khóa'}[r]||r);
 const icon=n=>({inbox:'▣',starred:'☆',sent:'↗',drafts:'□',spam:'!',trash:'⌫',archive:'▱',snoozed:'◷',contacts:'◎',admin:'◇'}[n]||'•');
-async function api(path,opts={}){const isForm=opts.body instanceof FormData;const r=await fetch(path,{...opts,headers:{...(isForm?{}:{'content-type':'application/json'}),...(opts.headers||{})}});let d={};try{d=await r.json()}catch{}if(!r.ok){const e=new Error(d.error||`HTTP ${r.status}`);e.detail=d.detail||'';e.code=d.code||'';e.status=r.status;e.payload=d;throw e}return d}
+async function api(path,opts={}){const isForm=opts.body instanceof FormData;const r=await fetch(path,{...opts,headers:{...(isForm?{}:{'content-type':'application/json'}),...(opts.headers||{})}});let d={};try{d=await r.json()}catch{}if(!r.ok){const e=new Error(d.error||`HTTP ${r.status}`);e.detail=d.detail||'';e.code=d.code||'';e.stage=d.stage||'';e.status=r.status;e.payload=d;throw e}return d}
+const apiErrorText=e=>[e?.message||'Yêu cầu thất bại',e?.code?`Mã ${e.code}`:'',e?.stage?`Giai đoạn ${e.stage}`:'',e?.detail?`Chi tiết: ${String(e.detail).slice(0,240)}`:''].filter(Boolean).join(' · ');
 function applyTheme(t='system'){S.theme=t;document.documentElement.dataset.theme=t;if(t==='system')document.documentElement.removeAttribute('data-theme')}
 function brand(){return`<div class="brand"><img class="brand-logo" src="/sky-first-logo.png" alt="Sky First"><div><b>SKY FIRST</b><span>TRUNG TÂM THƯ ĐIỆN TỬ</span></div></div>`}
 function msg(text,type='error'){return`<div class="notice ${type}">${esc(text)}</div>`}
@@ -100,7 +101,7 @@ async function admin(){
     if(!ids.length){status.textContent='Hãy chọn ít nhất một tài khoản.';return}
     if(!await inlineConfirm(root,`Xóa vĩnh viễn ${ids.length} tài khoản đã chọn cùng hộp thư và dữ liệu liên quan?`))return;
     const btn=body.querySelector('#bulkDeleteUsers');btn.disabled=true;btn.textContent='Đang xóa…';let ok=0,failed=[];
-    for(const id of ids){try{const result=await api(`/api/admin/users/${id}`,{method:'DELETE',body:JSON.stringify({confirm:true})});if(!result.deleted)throw new Error('Máy chủ chưa xác nhận xóa thành công.');ok++}catch(e){failed.push(`${id}: ${e.message}`)}}
+    for(const id of ids){try{const result=await api(`/api/admin/users/${id}`,{method:'DELETE',body:JSON.stringify({confirm:true})});if(!result.deleted)throw new Error('Máy chủ chưa xác nhận xóa thành công.');ok++}catch(e){failed.push(`${id}: ${apiErrorText(e)}`)}}
     status.textContent=`Xóa thành công ${ok}/${ids.length} tài khoản.`+(failed.length?` Còn lỗi: ${failed.join(' · ')}`:'');
     try{[dash,users]=await Promise.all([api('/api/admin/dashboard'),api('/api/admin/users')]);const st=dash.stats;root.querySelector('#adminStats').innerHTML=`<div><b>${st.users}</b><span>Tài khoản</span></div><div><b>${st.activeMailboxes}</b><span>Hộp thư hoạt động</span></div><div><b>${st.messages}</b><span>Thư</span></div><div><b>${fmt(st.bytes)}</b><span>Dữ liệu thư</span></div><div><b>${st.unread}</b><span>Thư chưa đọc</span></div>`;open('users');if(failed.length)appNotice(`Đã xóa ${ok}/${ids.length}. Các tài khoản còn lỗi: ${failed.join(' · ')}`,'error');else appNotice(`Đã xóa thành công ${ok} tài khoản.`,'success')}catch(e){setError(`Đã xử lý xóa nhưng không làm mới được danh sách: ${e.message}`);appNotice(`Không làm mới được danh sách: ${e.message}`,'error')}
    };
@@ -191,7 +192,7 @@ function editUser(u,parent){
    if(!result.deleted)throw Object.assign(new Error(result.error||'Máy chủ chưa xác nhận xóa thành công.'),{code:result.code||''});
    w.remove();appNotice(`Đã xóa tài khoản ${u.email}.`,'success');
    try{await admin()}catch(e){appNotice(`Tài khoản đã xóa, nhưng danh sách chưa làm mới được: ${e.message}`,'error')}
-  }catch(e){message.innerHTML=msg(`Không xóa được tài khoản: ${e.message}${e.code?` · Mã ${e.code}`:''}`);btn.disabled=false;btn.textContent='Thử xóa lại'}
+  }catch(e){message.innerHTML=msg(`Không xóa được tài khoản: ${apiErrorText(e)}`);btn.disabled=false;btn.textContent='Thử xóa lại'}
  };
  w.querySelector('#save').onclick=async()=>{
   const save=w.querySelector('#save'),password=w.querySelector('#rp').value;save.disabled=true;save.textContent='Đang lưu…';message.textContent='';

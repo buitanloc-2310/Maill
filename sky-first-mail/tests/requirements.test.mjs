@@ -212,8 +212,9 @@ test('account deletion preserves shared R2 objects and removes owned messages an
   const api = read('../src/index.js');
   assert.match(api, /deleteObjectIfUnreferenced/);
   assert.match(api, /SELECT 1 FROM messages WHERE storage_key=\?.*UNION ALL SELECT 1 FROM attachments WHERE storage_key=\?/s);
-  assert.match(api, /DELETE FROM messages WHERE mailbox_id IN \(SELECT id FROM mailboxes WHERE user_id=\?\)/);
-  assert.match(api, /DELETE FROM send_operations WHERE user_id=\?/);
+  assert.match(api, /messages:\['mailbox_id'\]/);
+  assert.match(api, /send_operations:\['user_id'\]/);
+  assert.match(api, /SELECT storage_key FROM messages WHERE mailbox_id IN/);
 });
 
 test('avatar uploads reject SVG and require raster signatures', () => {
@@ -266,16 +267,16 @@ test('draft save validates existing records before R2 writes and preserves attac
   assert.match(api, /deleteObjectIfUnreferenced\(env,old\.storage_key\)/);
 });
 
-test('account deletion executes dependent row removals in one database batch before auditing and R2 cleanup', () => {
+test('account deletion discovers deployed foreign keys and removes dependent rows in one atomic D1 batch', () => {
   const api = read('../src/index.js');
-  const start = api.indexOf('// D1 batch keeps dependent-row deletion');
-  const end = api.indexOf("return json({ok:true,deleted:true})", start);
+  const start = api.indexOf('const tableRows=await env.DB.prepare');
+  const end = api.indexOf("return json({ok:true,deleted:true,cleanupWarnings})", start);
   const block = api.slice(start, end);
-  assert.match(block, /await env\.DB\.batch\(\[/);
-  assert.match(block, /DELETE FROM messages WHERE mailbox_id IN/);
-  assert.match(block, /DELETE FROM send_operations WHERE user_id=\?/);
-  assert.match(block, /DELETE FROM users WHERE id=\?/);
-  assert.ok(block.indexOf('await env.DB.batch') < block.indexOf("await audit(env,user.id,'admin.user.deleted'"));
+  assert.match(block, /PRAGMA foreign_key_list/);
+  assert.match(block, /NO ACTION.*RESTRICT/s);
+  assert.match(block, /await env\.DB\.batch\(statements\)/);
+  assert.match(block, /DELETE FROM users WHERE id=\? AND \$\{canDeleteSql\}/);
+  assert.ok(block.indexOf('await env.DB.batch(statements)') < block.indexOf("await audit(env,user.id,'admin.user.deleted'"));
 });
 
 test('inline attachments only render verified raster images; active content is forced to download', async () => {
@@ -513,7 +514,7 @@ test('account removal guards dependent deletes and final Super Admin deletion in
   const api = read('../src/index.js');
   assert.match(api, /EXISTS \(SELECT 1 FROM users WHERE id=\? AND \$\{canDeleteSql\}\)/);
   assert.match(api, /DELETE FROM users WHERE id=\? AND \$\{canDeleteSql\}/);
-  assert.match(api, /results\?\.\[6\]\?\.meta\?\.changes/);
+  assert.match(api, /results\?\.\[results\.length-1\]\?\.meta\?\.changes/);
 });
 
 test('R2 cleanup retains objects referenced by a send operation', () => {

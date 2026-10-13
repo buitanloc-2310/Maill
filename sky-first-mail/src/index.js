@@ -626,34 +626,162 @@ async function routeApi(request,env){
       if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được xóa tài khoản quản trị.');
       const b=await bodyJson(request);if(b.confirm!==true && normalizeEmail(b.confirmEmail)!==normalizeEmail(target.email))return badRequest('Yêu cầu xác nhận xóa không hợp lệ. Hãy xác nhận trong giao diện quản trị rồi thử lại.');
       const canDeleteSql=`(role<>'super_admin' OR status<>'active' OR (SELECT count(*) FROM users WHERE role='super_admin' AND status='active')>1)`;
-      const objects=[];let deleteStage='inventory',results;
+      const objects=[];let deleteStage='schema-inventory',results;
       try{
-        const inventory=await env.DB.prepare(`SELECT storage_key FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND storage_key IS NOT NULL
-          UNION SELECT a.storage_key FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND a.storage_key IS NOT NULL
-          UNION SELECT avatar_key storage_key FROM users WHERE id=? AND avatar_key IS NOT NULL
-          UNION SELECT cover_key storage_key FROM users WHERE id=? AND cover_key IS NOT NULL
-          UNION SELECT storage_key FROM compose_drafts WHERE user_id=? AND storage_key IS NOT NULL
-          UNION SELECT storage_key FROM send_operations WHERE user_id=? AND storage_key IS NOT NULL`).bind(id,id,id,id,id,id).all();
-        for(const r of inventory.results||[])if(r.storage_key)objects.push(r.storage_key);
-        deleteStage='database-transaction';
-        // D1 batch keeps dependent-row deletion and the guarded user DELETE in one atomic transaction.
+        // Inventory storage objects independently. Missing optional columns on an older
+        // production schema must never prevent the database account deletion itself.
+        const quoteIdent=value=>`"${String(value).replaceAll('"','""')}"`;
+        const tableRows=await env.DB.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all();
+        const tableNames=(tableRows.results||[]).map(r=>String(r.name||'')).filter(Boolean);
+        const tableSet=new Set(tableNames),columns=new Map(),foreignKeys=new Map();
+        for(const table of tableNames){
+          try{
+            const meta=await env.DB.prepare(`PRAGMA table_info(${quoteIdent(table)})`).all();
+            columns.set(table,new Set((meta.results||[]).map(c=>String(c.name||''))));
+          }catch(error){
+            columns.set(table,new Set());
+            console.warn('ADMIN_DELETE_TABLE_INFO_UNAVAILABLE',{table,message:error?.message||String(error)});
+          }
+          try{
+            const meta=await env.DB.prepare(`PRAGMA foreign_key_list(${quoteIdent(table)})`).all();
+            const grouped=new Map();
+            for(const fk of meta.results||[]){
+              const key=String(fk.id);
+              if(!grouped.has(key))grouped.set(key,[]);
+              grouped.get(key).push({seq:Number(fk.seq||0),parent:String(fk.table||''),from:String(fk.from||''),to:String(fk.to||''),onDelete:String(fk.on_delete||'NO ACTION').toUpperCase()});
+            }
+            foreignKeys.set(table,[...grouped.values()].map(group=>group.sort((a,b)=>a.seq-b.seq)));
+          }catch(error){
+            foreignKeys.set(table,[]);
+            console.warn('ADMIN_DELETE_FK_INSPECTION_UNAVAILABLE',{table,message:error?.message||String(error)});
+          }
+        }
+        const hasColumn=(table,column)=>!!columns.get(table)?.has(column);
+        const addStorageQuery=async(sql,binds=[])=>{
+          try{
+            const r=await env.DB.prepare(sql).bind(...binds).all();
+            for(const row of r.results||[])if(row.storage_key)objects.push(String(row.storage_key));
+          }catch(error){
+            // Storage collection is best-effort. Database deletion has priority;
+            // post-delete object cleanup still checks whether each object is referenced.
+            console.warn('ADMIN_DELETE_STORAGE_INVENTORY_SKIPPED',{message:error?.message||String(error)});
+          }
+        };
+        if(hasColumn('messages','storage_key')&&hasColumn('messages','mailbox_id')&&hasColumn('mailboxes','user_id')&&hasColumn('mailboxes','id'))
+          await addStorageQuery(`SELECT storage_key FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND storage_key IS NOT NULL`,[id]);
+        if(hasColumn('attachments','storage_key')&&hasColumn('attachments','message_id')&&hasColumn('messages','id')&&hasColumn('messages','mailbox_id')&&hasColumn('mailboxes','user_id'))
+          await addStorageQuery(`SELECT a.storage_key FROM attachments a JOIN messages m ON m.id=a.message_id WHERE m.mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND a.storage_key IS NOT NULL`,[id]);
+        if(hasColumn('users','avatar_key'))await addStorageQuery(`SELECT avatar_key AS storage_key FROM users WHERE id=? AND avatar_key IS NOT NULL`,[id]);
+        if(hasColumn('users','cover_key'))await addStorageQuery(`SELECT cover_key AS storage_key FROM users WHERE id=? AND cover_key IS NOT NULL`,[id]);
+        if(hasColumn('compose_drafts','storage_key')&&hasColumn('compose_drafts','user_id'))await addStorageQuery(`SELECT storage_key FROM compose_drafts WHERE user_id=? AND storage_key IS NOT NULL`,[id]);
+        if(hasColumn('send_operations','storage_key')&&hasColumn('send_operations','user_id'))await addStorageQuery(`SELECT storage_key FROM send_operations WHERE user_id=? AND storage_key IS NOT NULL`,[id]);
+
+        deleteStage='dependency-plan';
+        // Build a deletion closure from the live D1 foreign-key metadata rather than
+        // assuming every deployed database exactly matches the newest migration files.
+        // CASCADE and NO ACTION/RESTRICT dependents are explicitly removed child-first.
+        // messages are explicitly owned by the mailbox even though their legacy FK is SET NULL.
+        const rootCondition=`${quoteIdent('users')}.${quoteIdent('id')}=?`;
+        const conditionByTable=new Map([['users',rootCondition]]);
+        const edges=[];
+        const queue=['users'];
+        const queued=new Set(queue);
+        const explicitChild=(child,parent,action)=>child==='messages'&&parent==='mailboxes'&&action==='SET NULL';
+        while(queue.length){
+          const parent=queue.shift();
+          for(const child of tableNames){
+            if(child==='users'&&parent==='users')continue;
+            for(const group of (foreignKeys.get(child)||[])){
+              if(!group.length||group[0].parent!==parent)continue;
+              const action=group[0].onDelete||'NO ACTION';
+              if(!['CASCADE','NO ACTION','RESTRICT'].includes(action)&&!explicitChild(child,parent,action))continue;
+              // Only single-column FK edges are expected by this application. For a
+              // composite FK, build one correlated EXISTS covering every column.
+              const join=group.map(fk=>`${quoteIdent(child)}.${quoteIdent(fk.from)} = ${quoteIdent(parent)}.${quoteIdent(fk.to||'id')}`).join(' AND ');
+              const childCondition=`EXISTS (SELECT 1 FROM ${quoteIdent(parent)} WHERE ${join} AND (${conditionByTable.get(parent)||rootCondition}))`;
+              if(!conditionByTable.has(child)){
+                conditionByTable.set(child,childCondition);
+                if(!queued.has(child)){queue.push(child);queued.add(child)}
+              }
+              edges.push({parent,child});
+            }
+          }
+        }
+        // Fallback for a fresh/older database where FK introspection is unavailable or
+        // some legacy tables were created without constraints. These are known owned rows.
+        const directFallback={
+          send_operations:['user_id'],login_history:['user_id'],mail_templates:['user_id'],
+          compose_drafts:['user_id'],messages:['mailbox_id'],inbound_receipts:['mailbox_id']
+        };
+        const fkInspectionAvailable=[...foreignKeys.values()].some(groups=>groups.length>0);
+        if(!fkInspectionAvailable){
+          for(const [table,cols] of Object.entries(directFallback)){
+            if(!tableSet.has(table))continue;
+            if(table==='messages'&&hasColumn(table,'mailbox_id'))conditionByTable.set(table,`EXISTS (SELECT 1 FROM ${quoteIdent('mailboxes')} WHERE ${quoteIdent('messages')}.${quoteIdent('mailbox_id')} = ${quoteIdent('mailboxes')}.${quoteIdent('id')} AND ${quoteIdent('mailboxes')}.${quoteIdent('user_id')}=?)`);
+            else if(table==='inbound_receipts'&&hasColumn(table,'mailbox_id'))conditionByTable.set(table,`${quoteIdent('mailbox_id')} IN (SELECT ${quoteIdent('id')} FROM ${quoteIdent('mailboxes')} WHERE ${quoteIdent('user_id')}=?)`);
+            else if(hasColumn(table,cols[0]))conditionByTable.set(table,`${quoteIdent(cols[0])}=?`);
+          }
+        }
+        // inbound_receipts predates a declared FK and therefore needs a manual scope rule.
+        if(tableSet.has('inbound_receipts')&&hasColumn('inbound_receipts','mailbox_id')&&hasColumn('mailboxes','id')&&hasColumn('mailboxes','user_id')){
+          if(!conditionByTable.has('inbound_receipts'))conditionByTable.set('inbound_receipts',`${quoteIdent('mailbox_id')} IN (SELECT ${quoteIdent('id')} FROM ${quoteIdent('mailboxes')} WHERE ${quoteIdent('user_id')}=?)`);
+        }
+        // Keep user audit rows: their FK is SET NULL by design. Every other table in
+        // this ownership closure is deleted explicitly, making non-cascading legacy FKs safe.
+        const childrenByParent=new Map();
+        for(const edge of edges){if(!childrenByParent.has(edge.parent))childrenByParent.set(edge.parent,[]);childrenByParent.get(edge.parent).push(edge.child)}
+        const postorder=[],visiting=new Set(),visited=new Set();
+        const visit=table=>{
+          if(visited.has(table)||visiting.has(table))return;
+          visiting.add(table);
+          for(const child of childrenByParent.get(table)||[])visit(child);
+          visiting.delete(table);visited.add(table);
+          if(table!=='users')postorder.push(table);
+        };
+        visit('users');
+        // Add known rows with no declared FK (e.g. receipt deduplication) before mailbox deletion.
+        if(tableSet.has('inbound_receipts')&&!postorder.includes('inbound_receipts'))postorder.unshift('inbound_receipts');
+        const canDeleteSql=`(role<>'super_admin' OR status<>'active' OR (SELECT count(*) FROM users WHERE role='super_admin' AND status='active')>1)`;
         const guard=`EXISTS (SELECT 1 FROM users WHERE id=? AND ${canDeleteSql})`;
-        results=await env.DB.batch([
-          env.DB.prepare(`DELETE FROM inbound_receipts WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND ${guard}`).bind(id,id),
-          env.DB.prepare(`DELETE FROM messages WHERE mailbox_id IN (SELECT id FROM mailboxes WHERE user_id=?) AND ${guard}`).bind(id,id),
-          env.DB.prepare(`DELETE FROM send_operations WHERE user_id=? AND ${guard}`).bind(id,id),
-          env.DB.prepare(`DELETE FROM login_history WHERE user_id=? AND ${guard}`).bind(id,id),
-          env.DB.prepare(`DELETE FROM mail_templates WHERE user_id=? AND ${guard}`).bind(id,id),
-          env.DB.prepare(`DELETE FROM compose_drafts WHERE user_id=? AND ${guard}`).bind(id,id),
-          env.DB.prepare(`DELETE FROM users WHERE id=? AND ${canDeleteSql}`).bind(id)
-        ]);
-        if(Number(results?.[6]?.meta?.changes||0)!==1)return badRequest('Không thể xóa Siêu quản trị viên cuối cùng đang hoạt động.');
+        const statements=[];
+        for(const table of postorder){
+          if(!tableSet.has(table)||table==='users')continue;
+          const condition=conditionByTable.get(table);
+          if(!condition)continue;
+          // Avoid malformed SQL for unsupported tables whose FK column metadata is incomplete.
+          const binds=(condition.match(/\?/g)||[]).length;
+          if(binds!==1)continue;
+          statements.push(env.DB.prepare(`DELETE FROM ${quoteIdent(table)} WHERE (${condition}) AND ${guard}`).bind(...Array(binds).fill(id),id));
+        }
+        // Legacy tables without declared FKs still get explicit ownership cleanup.
+        for(const [table,cols] of Object.entries(directFallback)){
+          if(!tableSet.has(table)||postorder.includes(table)||table==='inbound_receipts')continue;
+          const col=cols[0];
+          if(table==='messages'&&hasColumn('messages','mailbox_id')){
+            const condition=`${quoteIdent('mailbox_id')} IN (SELECT ${quoteIdent('id')} FROM ${quoteIdent('mailboxes')} WHERE ${quoteIdent('user_id')}=?)`;
+            statements.unshift(env.DB.prepare(`DELETE FROM ${quoteIdent(table)} WHERE (${condition}) AND ${guard}`).bind(id,id));
+          }else if(hasColumn(table,col)){
+            statements.unshift(env.DB.prepare(`DELETE FROM ${quoteIdent(table)} WHERE ${quoteIdent(col)}=? AND ${guard}`).bind(id,id));
+          }
+        }
+        if(tableSet.has('inbound_receipts')&&conditionByTable.has('inbound_receipts')){
+          const condition=conditionByTable.get('inbound_receipts');
+          if((condition.match(/\?/g)||[]).length===1)statements.unshift(env.DB.prepare(`DELETE FROM ${quoteIdent('inbound_receipts')} WHERE (${condition}) AND ${guard}`).bind(id,id));
+        }
+        deleteStage='database-transaction';
+        // D1 batch is atomic. Child-owned rows are deleted before their parents, followed
+        // by a guarded user DELETE to protect the final active Super Admin.
+        statements.push(env.DB.prepare(`DELETE FROM users WHERE id=? AND ${canDeleteSql}`).bind(id));
+        results=await env.DB.batch(statements);
+        if(Number(results?.[results.length-1]?.meta?.changes||0)!==1)return badRequest('Không thể xóa Siêu quản trị viên cuối cùng đang hoạt động.');
       }catch(error){
         const raw=String(error?.message||error||'');
-        const code=/foreign key/i.test(raw)?'ADMIN_DELETE_FK':/no such (table|column)/i.test(raw)?'ADMIN_DELETE_SCHEMA':/unique constraint/i.test(raw)?'ADMIN_DELETE_CONFLICT':'ADMIN_DELETE_FAILED';
-        const safeMessage=code==='ADMIN_DELETE_FK'?'Cơ sở dữ liệu còn dữ liệu liên kết chưa được xử lý. Không có xác nhận xóa; hãy kiểm tra nhật ký máy chủ.':code==='ADMIN_DELETE_SCHEMA'?'Cấu trúc cơ sở dữ liệu chưa đồng bộ. Cần áp dụng các migration còn thiếu trước khi xóa.':code==='ADMIN_DELETE_CONFLICT'?'Dữ liệu tài khoản đang xung đột với bản ghi khác.':'Máy chủ từ chối giao dịch xóa. Tài khoản chỉ được coi là đã xóa khi API trả kết quả thành công.';
+        const code=/foreign.?key|constraint.*failed|SQLITE_CONSTRAINT_FOREIGNKEY/i.test(raw)?'ADMIN_DELETE_FK':/no such (table|column)|has no column named/i.test(raw)?'ADMIN_DELETE_SCHEMA':/unique constraint|SQLITE_CONSTRAINT_UNIQUE/i.test(raw)?'ADMIN_DELETE_CONFLICT':/locked|busy|timeout/i.test(raw)?'ADMIN_DELETE_BUSY':'ADMIN_DELETE_FAILED';
+        const safeMessage=code==='ADMIN_DELETE_FK'?'Cơ sở dữ liệu còn dữ liệu liên kết ngoài danh mục đã nhận diện. Hãy thử lại sau khi đồng bộ các bảng liên quan.':code==='ADMIN_DELETE_SCHEMA'?'Cấu trúc cơ sở dữ liệu đang khác phiên bản ứng dụng; thao tác xóa đã được hủy an toàn.':code==='ADMIN_DELETE_CONFLICT'?'Dữ liệu tài khoản đang xung đột với bản ghi khác.':code==='ADMIN_DELETE_BUSY'?'Cơ sở dữ liệu đang bận; vui lòng thử lại.':'Máy chủ chưa hoàn tất giao dịch xóa; dữ liệu chưa được xác nhận là đã xóa.';
         console.error('ADMIN_USER_DELETE_FAILED',{id,actorUserId:user.id,stage:deleteStage,code,message:raw,stack:error?.stack||''});
-        return json({ok:false,deleted:false,code,error:safeMessage},500);
+        // The diagnostic is shown only to the authenticated administrator calling this API;
+        // it contains the failing stage and short database message, not query parameters.
+        return json({ok:false,deleted:false,code,stage:deleteStage,error:safeMessage,detail:raw.slice(0,240)},500);
       }
       // The user row is now deleted. Follow-up audit and object cleanup must never turn a committed deletion into a false failure.
       try{await audit(env,user.id,'admin.user.deleted','user',id,{email:target.email})}
