@@ -41,8 +41,15 @@ Gói phát hành sạch chỉ chứa một cây dự án `Sky-First-Mail/`, nơi
 ## Kiến trúc scale
 Dữ liệu nặng (raw email, attachment, avatar) nằm ở **R2**. D1 giữ metadata/index để giảm phụ thuộc vào dung lượng DB. Với quy mô rất lớn, lớp metadata phải được chuyển sang sharding hoặc database ngoài (ví dụ PostgreSQL/Hyperdrive); không nên coi một D1 đơn lẻ là kiến trúc cho hàng triệu tài khoản. Xem `docs/SCALING.md`.
 
-## Lưu ý
-Không xóa D1/R2 hiện tại khi nâng cấp. `ensureSchema()` tự bổ sung schema cần thiết. Không commit `RESEND_API_KEY` vào repository.
+## Bản sửa 12.0.5 — Khởi động và hiệu năng
+
+- Các yêu cầu khởi động có thời hạn chờ rõ ràng; nếu API không phản hồi, giao diện hiện thông báo và cho thử lại thay vì mắc kẹt ở splash screen.
+- Lỗi tải thư được tách khỏi lỗi xác thực phiên đăng nhập.
+- `ensureSchema()` kiểm tra theo nhóm bảng và ghi dấu mốc `runtime_schema_version` trong D1 để các Worker isolate mới có thể bỏ qua quá trình tương thích schema lặp lại khi phiên bản đã sẵn sàng.
+- URL `app.js` được đánh phiên bản và service-worker cache được nâng phiên bản để hạn chế tải mã frontend cũ sau cập nhật.
+- Không xóa D1/R2 hiện tại khi nâng cấp. Không commit `RESEND_API_KEY` vào repository.
+
+Chi tiết phạm vi và giới hạn kiểm thử: `STARTUP-PERFORMANCE-FIX-20261014.md`.
 
 ## Kiểm thử và phát hành
 

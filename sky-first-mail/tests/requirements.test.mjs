@@ -4,7 +4,8 @@ import {readFileSync, readdirSync, existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import { isAllowedAvatarImage, safeAttachmentResponse } from '../src/lib/content-policy.js';
-import { boundedRequest } from '../src/lib/reliability.js';
+import { boundedRequest, RELIABILITY_STATEMENTS } from '../src/lib/reliability.js';
+import { database } from './db.mjs';
 import { sendGateway, sendExternal } from '../src/lib/transport.js';
 import { safeMimeType, safeMimeFilename } from '../src/lib/mime-safety.js';
 import { readStreamBounded } from '../src/lib/stream-limit.js';
@@ -55,12 +56,16 @@ test('requested compose library ships exactly five HTML documents and ten snippe
   }
 });
 
+const htmlReadForCacheBust = () => read('../public/index.html');
+
 test('PWA manifest icons exist and static-only service worker excludes API caching', () => {
   const manifest = JSON.parse(read('../public/manifest.webmanifest'));
   for (const icon of manifest.icons) assert.ok(existsSync(atRoot(icon.src.replace(/^\//, 'public/'))), `missing ${icon.src}`);
   const sw = read('../public/sw.js');
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
   assert.match(sw, /cache: 'no-store'/);
+  assert.match(sw, /sky-first-mail-static-v3-startupfix/);
+  assert.match(htmlReadForCacheBust(), /app\.js\?v=12\.0\.5/);
 });
 
 test('Windows desktop installer metadata and CI build path are present', () => {
@@ -185,7 +190,7 @@ test('email reader validates link schemes and enables authenticated inline image
 test('web entry document points to existing local assets only', () => {
   const html = read('../public/index.html');
   assert.match(html, /href="\/styles\.css"/);
-  assert.match(html, /src="\/app\.js"/);
+  assert.match(html, /src="\/app\.js(?:\?[^"]*)?"/);
   assert.match(html, /src="\/v3\.js"/);
   assert.match(html, /src="\/v4\.js"/);
   assert.match(html, /src="\/v5\.js"/);
@@ -618,6 +623,68 @@ test('schema bootstrap is single-flight for concurrent first requests in a Worke
   assert.match(api, /schemaPromise=null;\s*throw error/s);
 });
 
+
+test('mail startup has bounded API waits and exits the splash screen with a recoverable state', () => {
+  const ui = read('../public/app.js');
+  assert.match(ui, /timeoutMs=60000/);
+  assert.match(ui, /timeoutMs:12000/);
+  assert.match(ui, /timeoutMs:15000/);
+  assert.match(ui, /code='API_TIMEOUT'/);
+  assert.match(ui, /function showBootError\(error\)/);
+  assert.match(ui, /function showMessagesError\(error\)/);
+  assert.match(ui, /if\(e\.status===401\)return login\(\)/);
+});
+
+test('API helper aborts a stalled request and returns an explicit bootstrap timeout', async () => {
+  const ui = read('../public/app.js');
+  const start = ui.indexOf('async function api(path,opts={}){');
+  const end = ui.indexOf('\nconst apiErrorText=', start);
+  assert.ok(start >= 0 && end > start, 'API helper should be independently testable');
+  const helper = ui.slice(start, end);
+  const fakeFetch = (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+  });
+  const api = new Function('fetch', 'AbortController', 'FormData', 'setTimeout', 'clearTimeout', `${helper}; return api;`)(fakeFetch, AbortController, FormData, setTimeout, clearTimeout);
+  await assert.rejects(api('/api/bootstrap/status', { timeoutMs: 5 }), error => error.code === 'API_TIMEOUT' && /khởi tạo hộp thư/.test(error.message));
+});
+
+test('runtime schema compatibility check is memoized across Worker isolates and groups column checks by table', () => {
+  const api = read('../src/index.js');
+  assert.match(api, /SCHEMA_BOOTSTRAP_VERSION='12\.0\.5'/);
+  assert.match(api, /runtime_schema_version/);
+  assert.match(api, /function ensureColumns\(env,table,columns\)/);
+  assert.match(api, /env\.DB\.batch\(RELIABILITY_STATEMENTS\.map/);
+  assert.doesNotMatch(api, /for\(const \[table,column,def\] of/);
+});
+
+test('runtime schema bootstrap prepares a clean database and later isolates use the durable marker', async () => {
+  const source = read('../src/index.js');
+  const start = source.indexOf("const SCHEMA_BOOTSTRAP_VERSION='12.0.5';");
+  const end = source.indexOf('\nasync function audit(', start);
+  assert.ok(start >= 0 && end > start, 'schema bootstrap source should be independently testable');
+  const declaration = source.slice(start, end);
+  const createBootstrap = () => new Function('RELIABILITY_STATEMENTS', `${declaration}; return ensureSchema;`)(RELIABILITY_STATEMENTS);
+  const raw = database();
+  let tablePragmaCount = 0;
+  const DB = {
+    exec: raw.exec,
+    batch: raw.batch,
+    prepare(sql) {
+      if (/^\s*PRAGMA table_info/i.test(sql)) tablePragmaCount++;
+      return raw.prepare(sql);
+    }
+  };
+  await createBootstrap()({ DB });
+  const firstRunPragmas = tablePragmaCount;
+  assert.equal(firstRunPragmas, 5, 'runtime compatibility checks should perform one PRAGMA per affected table');
+  const marker = await DB.prepare("SELECT value_json FROM settings WHERE key='runtime_schema_version'").first();
+  assert.equal(marker.value_json, '"12.0.5"');
+  const columns = await DB.prepare('PRAGMA table_info(managed_domains)').all();
+  assert.ok(columns.results.some(column => column.name === 'inbound_adapter'));
+  const countAfterAssertions = tablePragmaCount;
+  await createBootstrap()({ DB });
+  assert.equal(tablePragmaCount, countAfterAssertions, 'new Worker isolate should skip repeated schema scans using the D1 marker');
+});
 
 test('mixed internal and external recipients cannot trigger a fallback send to local To recipients', () => {
   const compose = read('../src/lib/compose.js');

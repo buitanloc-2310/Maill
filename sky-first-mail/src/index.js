@@ -23,6 +23,7 @@ function normalizeMessageDate(value){
 }
 const validEmail=v=>String(v||'').length<=254&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v||'');
 const boolInt=v=>v?1:0;
+const SCHEMA_BOOTSTRAP_VERSION='12.0.5';
 const safeRole=v=>ROLES.includes(v)?v:'user';
 const parseJson=(v,fallback=[])=>{try{return JSON.parse(v??'')}catch{return fallback}};
 function constantTimeEqual(a,b){
@@ -33,9 +34,13 @@ function constantTimeEqual(a,b){
 }
 
 let schemaReady=false,schemaPromise=null;
-async function ensureColumn(env,table,column,definition){
+async function ensureColumns(env,table,columns){
+  // One PRAGMA round-trip per table, instead of one per column. Table/column names
+  // and definitions are static source constants, never request-controlled.
   const r=await env.DB.prepare(`PRAGMA table_info(${table})`).all();
-  if(!(r.results||[]).some(x=>x.name===column)) await env.DB.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  const existing=new Set((r.results||[]).map(x=>x.name));
+  const missing=columns.filter(([name])=>!existing.has(name));
+  if(missing.length)await env.DB.exec(missing.map(([name,definition])=>`ALTER TABLE ${table} ADD COLUMN ${name} ${definition};`).join('\n'));
 }
 async function ensureSchema(env){
   if(schemaReady)return;
@@ -44,6 +49,13 @@ async function ensureSchema(env){
   // initialization promise so they do not race PRAGMA/ALTER TABLE operations.
   schemaPromise=(async()=>{
    try{
+    // D1 is shared across Worker isolates, while schemaReady is isolate-local.
+    // A durable version marker lets a cold isolate skip the expensive compatibility
+    // DDL/PRAGMA path after the schema has been prepared once.
+    try{
+      const marker=await env.DB.prepare(`SELECT value_json FROM settings WHERE key='runtime_schema_version' LIMIT 1`).first();
+      if(marker?.value_json===JSON.stringify(SCHEMA_BOOTSTRAP_VERSION)){schemaReady=true;return;}
+    }catch{}
     await env.DB.exec(`
     PRAGMA foreign_keys = ON;
     CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE COLLATE NOCASE,display_name TEXT NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,password_iterations INTEGER NOT NULL DEFAULT 100000,role TEXT NOT NULL DEFAULT 'user',status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
@@ -80,14 +92,17 @@ async function ensureSchema(env){
     INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('skyfirst.io.vn','configured',1,0);
     INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('nhahanngu.io.vn','configured',1,0);
   `);
-  for(const statement of RELIABILITY_STATEMENTS) await env.DB.prepare(statement).run();
-  for(const [table,column,def] of [
-    ['users','avatar_key','TEXT'],['users','allow_name_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_password_change','INTEGER NOT NULL DEFAULT 1'],['users','last_login_at','TEXT'],['users','cover_key','TEXT'],['users','profile_status',"TEXT NOT NULL DEFAULT 'available'"],['users','allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['users','allow_theme_change','INTEGER NOT NULL DEFAULT 1'],
-    ['sessions','ip','TEXT'],['sessions','user_agent','TEXT'],['sessions','last_seen_at','TEXT'],
-    ['messages','bcc_json','TEXT'],['messages','is_important','INTEGER NOT NULL DEFAULT 0'],['messages','snoozed_until','TEXT'],['messages','content_sha256','TEXT'],['messages','hash_recorded_at','TEXT'],['compose_drafts','bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['compose_drafts','body_html','TEXT'],['compose_drafts','sender_address','TEXT'],['compose_drafts','reply_to_message_id','INTEGER'],
-    ['managed_domains','transport',"TEXT NOT NULL DEFAULT 'resend'"],['managed_domains','verification_token','TEXT'],['managed_domains','verified_at','TEXT'],['managed_domains','last_checked_at','TEXT'],['managed_domains','health_json','TEXT'],['managed_domains','inbound_adapter',"TEXT NOT NULL DEFAULT 'cloudflare_email_routing'"]
-  ]) await ensureColumn(env,table,column,def);
+  if(typeof env.DB.batch==='function')await env.DB.batch(RELIABILITY_STATEMENTS.map(statement=>env.DB.prepare(statement)));
+  else for(const statement of RELIABILITY_STATEMENTS)await env.DB.prepare(statement).run();
+  for(const [table,columns] of [
+    ['users',[['avatar_key','TEXT'],['allow_name_change','INTEGER NOT NULL DEFAULT 1'],['allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['allow_password_change','INTEGER NOT NULL DEFAULT 1'],['last_login_at','TEXT'],['cover_key','TEXT'],['profile_status',"TEXT NOT NULL DEFAULT 'available'"],['allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['allow_theme_change','INTEGER NOT NULL DEFAULT 1']]],
+    ['sessions',[['ip','TEXT'],['user_agent','TEXT'],['last_seen_at','TEXT']]],
+    ['messages',[['bcc_json','TEXT'],['is_important','INTEGER NOT NULL DEFAULT 0'],['snoozed_until','TEXT'],['content_sha256','TEXT'],['hash_recorded_at','TEXT']]],
+    ['compose_drafts',[['bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['body_html','TEXT'],['sender_address','TEXT'],['reply_to_message_id','INTEGER']]],
+    ['managed_domains',[['transport',"TEXT NOT NULL DEFAULT 'resend'"],['verification_token','TEXT'],['verified_at','TEXT'],['last_checked_at','TEXT'],['health_json','TEXT'],['inbound_adapter',"TEXT NOT NULL DEFAULT 'cloudflare_email_routing'"]]]
+  ])await ensureColumns(env,table,columns);
     // Domain send state is explicit; never auto-enable every domain because one provider secret exists.
+    await env.DB.prepare(`INSERT INTO settings(key,value_json,updated_at) VALUES('runtime_schema_version',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=CURRENT_TIMESTAMP`).bind(JSON.stringify(SCHEMA_BOOTSTRAP_VERSION)).run();
     schemaReady=true;
    }catch(error){
     schemaPromise=null;

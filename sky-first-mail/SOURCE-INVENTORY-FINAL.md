@@ -1,3 +1,3 @@
-# Source Inventory — Sky First Mail R8 CLEAN
+# Source Inventory — Sky First Mail v12.0.5
 
-See `SOURCE-INVENTORY-R8-20261012.md` for file counts, archive-root verification, checksums, the image/link policy change, and current test statuses.
+See `SOURCE-INVENTORY-V12.0.5-20261014.md` for the canonical ZIP layout, checksum inventory, startup/performance changes and test evidence.
