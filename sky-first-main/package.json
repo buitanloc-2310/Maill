@@ -1,0 +1,22 @@
+{
+  "name": "sky-first-mail",
+  "version": "12.0.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 migrations apply DB --remote",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "validate": "node --check src/index.js && node --check src/lib/auth.js && node --check src/lib/compose.js && node --check src/lib/content-policy.js && node --check src/lib/governance.js && node --check src/lib/mail.js && node --check src/lib/security.js && node --check src/lib/transport.js && node --check public/app.js && node --check public/v5.js && node --check public/sw.js && node --check scripts/local-server.mjs && node --check tests/db.mjs && node --check tests/mail.test.mjs && node --check tests/requirements.test.mjs",
+    "test": "node --test tests/mail.test.mjs",
+    "test:requirements": "node --test tests/requirements.test.mjs",
+    "test:all": "npm run validate && npm test && npm run test:requirements"
+  },
+  "dependencies": {
+    "postal-mime": "^2.4.3"
+  },
+  "devDependencies": {
+    "wrangler": "^4.35.0"
+  }
+}
