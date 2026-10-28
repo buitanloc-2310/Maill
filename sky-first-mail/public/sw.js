@@ -1,9 +1,9 @@
 /* Sky First Mail service worker. Email/API responses are deliberately never cached. */
 const CACHE_NAME = 'sky-first-mail-static-v3-startupfix';
 const STATIC_ASSETS = [
-  '/styles.css', '/stability.css', '/app.js', '/ui-dialogs.js', '/v3.js', '/v4.js', '/v5.js', '/v7.js',
-  '/favicon.png', '/favicon-app.png', '/sky-first-logo.png', '/manifest.webmanifest', '/app-icon-192.png',
-  '/app-icon-512.png', '/library/compose-library.json'
+  '/styles.css', '/app.js', '/v5.js',
+  '/favicon-app.png', '/sky-first-logo.png', '/bimi-logo.svg', '/manifest.webmanifest',
+  '/app-icon-192.png', '/app-icon-512.png', '/library/compose-library.json'
 ];
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
@@ -38,7 +38,7 @@ self.addEventListener('fetch', event => {
     })());
     return;
   }
-  if (!STATIC_ASSETS.includes(url.pathname) && !url.pathname.startsWith('/library/html/')) return;
+  if (!STATIC_ASSETS.includes(url.pathname)) return;
   event.respondWith((async () => {
     const cache = await caches.open(CACHE_NAME), cached = await cache.match(request);
     const network = fetch(request).then(async response => { if (response.ok) await cache.put(request, response.clone()); return response; });

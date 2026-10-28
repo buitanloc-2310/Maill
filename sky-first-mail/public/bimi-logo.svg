@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny-ps" viewBox="0 0 512 512">
+  <title>Sky First</title>
+  <rect width="512" height="512" fill="#073c9b"/>
+  <circle cx="256" cy="256" r="184" fill="#0c63d4"/>
+  <path d="M128 192h256v144H128z" fill="#ffffff"/>
+  <path d="M128 192l128 88 128-88" fill="#9fe8ff"/>
+</svg>

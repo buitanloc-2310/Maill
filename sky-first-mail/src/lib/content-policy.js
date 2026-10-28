@@ -22,6 +22,35 @@ function toBytes(content) {
   return new Uint8Array();
 }
 
+export function safeMimeType(value) {
+  const candidate = String(value || '').split(';')[0].trim().toLowerCase();
+  return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(candidate)
+    ? candidate
+    : 'application/octet-stream';
+}
+
+export function safeMimeFilename(value) {
+  const name = (wellFormedFilename(value || 'attachment')
+    .replace(/[\\/";\r\n\x00-\x1f\x7f]/g, '_').replace(/\.\./g, '_').slice(0, 180) || 'attachment');
+  const ascii = name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7e]/g, '_').replace(/[";\\]/g, '_') || 'attachment';
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, character => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return { ascii, parameters: `filename="${ascii}"; filename*=UTF-8''${encoded}` };
+}
+
+const BLOCKED_ATTACHMENT_EXTENSIONS = new Set([
+  '.exe', '.scr', '.bat', '.cmd', '.com', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh',
+  '.ps1', '.psm1', '.msi', '.msp', '.hta', '.cpl', '.jar', '.reg', '.dll', '.pif', '.lnk'
+]);
+
+export function isDangerousAttachmentName(filename = '') {
+  const lower = String(filename || '').trim().toLowerCase();
+  for (const ext of BLOCKED_ATTACHMENT_EXTENSIONS) {
+    if (lower.endsWith(ext) || new RegExp(`\\${ext}\\.[a-z0-9]{1,8}$`, 'i').test(lower)) return true;
+  }
+  return false;
+}
+
 export function isAllowedAvatarImage(type, bytes) {
   const normalized = String(type || '').split(';')[0].trim().toLowerCase();
   const data = toBytes(bytes);

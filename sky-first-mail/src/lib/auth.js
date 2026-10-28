@@ -1,5 +1,25 @@
 import { cookie, clearCookie, getCookie, randomToken, sha256Hex } from './security.js';
 
+export function json(data, status = 200, headers = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      ...headers
+    }
+  });
+}
+
+export async function bodyJson(request) {
+  try { return await request.json(); } catch { return {}; }
+}
+
+export function badRequest(message) { return json({ ok: false, error: message }, 400); }
+export function unauthorized(message = 'Bạn chưa đăng nhập.') { return json({ ok: false, error: message }, 401); }
+export function forbidden(message = 'Bạn không có quyền thực hiện thao tác này.') { return json({ ok: false, error: message }, 403); }
+export function notFound(message = 'Không tìm thấy.') { return json({ ok: false, error: message }, 404); }
+
 export async function createSession(env, userId, request = null) {
   const token = randomToken(32);
   const tokenHash = await sha256Hex(token);
@@ -23,7 +43,7 @@ export async function currentSession(request, env) {
   const row = await env.DB.prepare(`
     SELECT s.id session_id, s.expires_at session_expires_at, u.*
     FROM sessions s JOIN users u ON u.id=s.user_id
-    WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now') AND u.status='active' LIMIT 1
+    WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now') AND u.status='active' AND (u.expires_at IS NULL OR datetime(u.expires_at)>datetime('now')) LIMIT 1
   `).bind(tokenHash).first();
   if (row) {
     try { await env.DB.prepare(`UPDATE sessions SET last_seen_at=CURRENT_TIMESTAMP WHERE id=?`).bind(row.session_id).run(); } catch {}

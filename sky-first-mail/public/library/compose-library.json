@@ -7,8 +7,8 @@
       "subject": "Thư mời phối hợp triển khai chương trình",
       "body_text": "Thư mời phối hợp triển khai chương trình",
       "category": "HTML chuyên nghiệp",
-      "file": "/library/html/01-thu-moi-hop-tac.html",
-      "kind": "html"
+      "kind": "html",
+      "body_html": "<!doctype html>\n<html lang=\"vi\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>01-thu-moi-hop-tac.html</title></head><body>\n<div style=\"font-family:Arial,sans-serif;max-width:720px;margin:auto;color:#17324f;line-height:1.7\"><div style=\"padding:22px 26px;background:#083f9b;color:#fff\"><strong style=\"font-size:20px;letter-spacing:.06em\">SKY FIRST</strong><div style=\"font-size:12px;color:#9fe8ff\">KẾT NỐI · HỢP TÁC · PHÁT TRIỂN</div></div><div style=\"padding:26px;border:1px solid #dce8f5\"><p>Kính gửi Quý Đơn vị,</p><p>Trung tâm Thư điện tử Sky First trân trọng gửi tới Quý Đơn vị lời chào và lời chúc tốt đẹp.</p><p>Chúng tôi mong muốn trao đổi cơ hội phối hợp trong <strong>[tên chương trình/dự án]</strong>, hướng đến những giá trị thiết thực và bền vững cho cộng đồng.</p><p>Nếu phù hợp, kính mời Quý Đơn vị sắp xếp một buổi trao đổi vào thời gian thuận tiện để hai bên cùng thống nhất mục tiêu và phương thức phối hợp.</p><p>Trân trọng,<br><strong>[Họ tên]</strong><br>[Chức danh] · Sky First</p></div></div>\n</body></html>\n"
     },
     {
       "id": "builtin-html-02",
@@ -16,8 +16,8 @@
       "subject": "Thư mời họp / lịch trao đổi",
       "body_text": "Thư mời họp / lịch trao đổi",
       "category": "HTML chuyên nghiệp",
-      "file": "/library/html/02-thu-moi-hop.html",
-      "kind": "html"
+      "kind": "html",
+      "body_html": "<!doctype html>\n<html lang=\"vi\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>02-thu-moi-hop.html</title></head><body>\n<div style=\"font-family:Arial,sans-serif;max-width:700px;margin:auto;color:#24384d;line-height:1.65\"><h2 style=\"color:#075fbd;border-bottom:3px solid #06bce9;padding-bottom:10px\">THƯ MỜI HỌP</h2><p>Kính gửi [Tên người nhận/đơn vị],</p><p>Trân trọng kính mời Anh/Chị tham dự buổi họp về <strong>[chủ đề]</strong> với thông tin như sau:</p><table style=\"border-collapse:collapse;width:100%\"><tr><td style=\"padding:10px;border:1px solid #dce5ef;background:#eef7ff;width:150px\">Thời gian</td><td style=\"padding:10px;border:1px solid #dce5ef\">[Ngày, giờ]</td></tr><tr><td style=\"padding:10px;border:1px solid #dce5ef;background:#eef7ff\">Hình thức/địa điểm</td><td style=\"padding:10px;border:1px solid #dce5ef\">[Địa điểm hoặc liên kết họp]</td></tr><tr><td style=\"padding:10px;border:1px solid #dce5ef;background:#eef7ff\">Nội dung chính</td><td style=\"padding:10px;border:1px solid #dce5ef\">[Các nội dung cần trao đổi]</td></tr></table><p>Kính mong Anh/Chị xác nhận tham dự và phản hồi nếu cần điều chỉnh lịch.</p><p>Trân trọng,<br><strong>[Họ tên]</strong><br>Sky First</p></div>\n</body></html>\n"
     },
     {
       "id": "builtin-html-03",
@@ -25,8 +25,8 @@
       "subject": "Đề xuất chương trình / dự án",
       "body_text": "Đề xuất chương trình / dự án",
       "category": "HTML chuyên nghiệp",
-      "file": "/library/html/03-de-xuat-phoi-hop.html",
-      "kind": "html"
+      "kind": "html",
+      "body_html": "<!doctype html>\n<html lang=\"vi\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>03-de-xuat-phoi-hop.html</title></head><body>\n<div style=\"font-family:Arial,sans-serif;max-width:720px;margin:auto;color:#18324b;line-height:1.7\"><div style=\"border-left:5px solid #0878dd;padding-left:16px\"><small style=\"color:#0878dd;letter-spacing:.1em\">SKY FIRST · ĐỀ XUẤT</small><h2 style=\"margin:6px 0;color:#073c9b\">Đề xuất phối hợp [Tên chương trình]</h2></div><p>Kính gửi Quý Đơn vị,</p><p>Trên cơ sở định hướng và nhu cầu hai bên, chúng tôi xin đề xuất trao đổi về nội dung phối hợp sau:</p><ul><li><strong>Mục tiêu:</strong> [Mục tiêu dự kiến]</li><li><strong>Đối tượng/phạm vi:</strong> [Đối tượng và phạm vi]</li><li><strong>Vai trò dự kiến:</strong> [Vai trò mỗi bên]</li><li><strong>Tiến độ:</strong> [Mốc thời gian dự kiến]</li><li><strong>Kết quả mong đợi:</strong> [Kết quả và cách đánh giá]</li></ul><p>Nội dung trên là cơ sở thảo luận ban đầu, sẽ được điều chỉnh theo ý kiến thống nhất và thẩm quyền phê duyệt của các bên.</p><p>Trân trọng,<br><strong>[Họ tên]</strong><br>[Chức danh] · Sky First</p></div>\n</body></html>\n"
     },
     {
       "id": "builtin-html-04",
@@ -34,8 +34,8 @@
       "subject": "Xác nhận nhận email/tài liệu",
       "body_text": "Xác nhận nhận email/tài liệu",
       "category": "HTML chuyên nghiệp",
-      "file": "/library/html/04-xac-nhan-tiep-nhan.html",
-      "kind": "html"
+      "kind": "html",
+      "body_html": "<!doctype html>\n<html lang=\"vi\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>04-xac-nhan-tiep-nhan.html</title></head><body>\n<div style=\"font-family:Arial,sans-serif;max-width:680px;margin:auto;color:#23384d;line-height:1.7\"><div style=\"background:#edf8ff;border:1px solid #cde9ff;border-radius:12px;padding:18px\"><strong style=\"color:#075fbd\">SKY FIRST · XÁC NHẬN TIẾP NHẬN</strong></div><p>Kính gửi [Tên người gửi],</p><p>Chúng tôi xác nhận đã nhận được email/tài liệu về <strong>[nội dung]</strong> vào [thời điểm].</p><p>Thông tin sẽ được chuyển đến bộ phận/người phụ trách để xem xét. Nếu cần bổ sung tài liệu hoặc làm rõ nội dung, chúng tôi sẽ liên hệ lại.</p><p>Lưu ý: thư này xác nhận việc tiếp nhận, không thay thế cho văn bản phê duyệt hoặc cam kết chính thức.</p><p>Trân trọng,<br><strong>[Họ tên / Bộ phận]</strong><br>Sky First</p></div>\n</body></html>\n"
     },
     {
       "id": "builtin-html-05",
@@ -43,8 +43,8 @@
       "subject": "Cảm ơn sau cuộc họp / trao đổi",
       "body_text": "Cảm ơn sau cuộc họp / trao đổi",
       "category": "HTML chuyên nghiệp",
-      "file": "/library/html/05-thu-cam-on-theo-doi.html",
-      "kind": "html"
+      "kind": "html",
+      "body_html": "<!doctype html>\n<html lang=\"vi\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>05-thu-cam-on-theo-doi.html</title></head><body>\n<div style=\"font-family:Arial,sans-serif;max-width:700px;margin:auto;color:#20374d;line-height:1.7\"><h2 style=\"color:#073c9b\">Cảm ơn Quý Đơn vị đã trao đổi cùng Sky First</h2><p>Kính gửi Quý Đơn vị,</p><p>Cảm ơn Quý Đơn vị đã dành thời gian trao đổi về <strong>[chủ đề]</strong> vào [ngày]. Những ý kiến và thông tin chia sẻ rất hữu ích cho bước tiếp theo.</p><p>Để tiếp tục phối hợp, hai bên dự kiến:</p><ol><li>[Đầu việc 1] — [Người phụ trách] — [Thời hạn]</li><li>[Đầu việc 2] — [Người phụ trách] — [Thời hạn]</li></ol><p>Nếu có điểm nào cần điều chỉnh, kính mong Quý Đơn vị phản hồi để chúng tôi cập nhật lại nội dung thống nhất.</p><p>Trân trọng,<br><strong>[Họ tên]</strong><br>Sky First</p></div>\n</body></html>\n"
     },
     {
       "id": "builtin-chat-01",
