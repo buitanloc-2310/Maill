@@ -58,7 +58,10 @@ export async function reliableCompose(request,env,user,services){
  for(const [kind,addresses] of Object.entries({to,cc,bcc}))for(const addr of addresses){const mb=await services.resolveMailbox(env,addr);groups[kind].push({addr,mb});}
  const external=kind=>groups[kind].filter(x=>!x.mb).map(x=>x.addr);
  const hasExternal=['to','cc','bcc'].some(k=>external(k).length);
- if(hasExternal){const domain=await env.DB.prepare('SELECT send_enabled,status,transport FROM managed_domains WHERE domain=? COLLATE NOCASE').bind(fromMb.sender_address.split('@')[1]).first();if(!domain?.send_enabled||domain.status==='disabled')return badRequest('Tên miền gửi chưa được bật hoặc transport chưa cấu hình.');if(String(domain.transport||'resend').toLowerCase()==='resend'&&!external('to').length)return badRequest('Resend yêu cầu có ít nhất một địa chỉ ngoài hệ thống trong trường Đến. Để tránh gửi trùng cho người nhận nội bộ, hãy chuyển một người nhận ngoài vào Đến hoặc cấu hình MTA Gateway cho trường hợp chỉ có Cc/Bcc bên ngoài.');}
+ if(hasExternal){
+  const fromDomain=fromMb.sender_address.split('@')[1].toLowerCase();
+  const domain=await env.DB.prepare('SELECT send_enabled,status,transport FROM managed_domains WHERE domain=? COLLATE NOCASE').bind(fromDomain).first();
+  if(!domain?.send_enabled||domain.status==='disabled')return badRequest('Tên miền gửi chưa được bật hoặc transport chưa cấu hình.');if(String(domain.transport||'resend').toLowerCase()==='resend'&&!external('to').length)return badRequest('Resend yêu cầu có ít nhất một địa chỉ ngoài hệ thống trong trường Đến. Để tránh gửi trùng cho người nhận nội bộ, hãy chuyển một người nhận ngoài vào Đến hoặc cấu hình MTA Gateway cho trường hợp chỉ có Cc/Bcc bên ngoài.');}
  const supplied=String(form.get('requestId')||request.headers.get('idempotency-key')||'');
  if(supplied && !/^[a-zA-Z0-9_-]{16,100}$/.test(supplied))return badRequest('Mã yêu cầu gửi không hợp lệ.');
  const id=`${user.id}_${supplied||crypto.randomUUID()}`,hash=await fingerprint(form);
@@ -119,7 +122,9 @@ export async function reliableCompose(request,env,user,services){
    if(user.is_verified&&user.verification_status==='verified'){headers['X-SkyFirst-Verified']='true';headers['X-SkyFirst-Verification-Status']='verified';headers['X-SkyFirst-Verification-Type']=user.account_type||'personal';if(user.department)headers['X-SkyFirst-Department']=user.department;headers['BIMI-Selector']='v=BIMI1; s=default';}
    await env.DB.prepare("UPDATE send_operations SET status='sending',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run();
    providerStarted=true;
-   const result=await services.sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:effectiveDisplayName,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html:outgoingHtml,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey:id});providerId=result.id;providerName=result.provider||'external';
+   // Resend API strictly rejects non-ASCII symbols like ✓ in the 'from' field display name. Send clean name to Resend, while verified badge is proudly displayed in the email HTML body and RFC headers!
+   const cleanFromName=String(user.display_name||fromMb.display_name||'Sky First').replace(/[^a-zA-Z0-9\sÀ-ỹ_.-]/g,'').trim()||'Sky First';
+   const result=await services.sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:cleanFromName,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html:outgoingHtml,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey:id});providerId=result.id;providerName=result.provider||'external';
    await env.DB.prepare("UPDATE send_operations SET provider_id=?,status='accepted',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(providerId,id).run();
   }
   const now=new Date().toISOString(),preview=(text||html.replace(/<[^>]+>/g,' ')).slice(0,180);

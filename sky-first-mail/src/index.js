@@ -69,6 +69,9 @@ const BASE_SCHEMA_STATEMENTS=[
   "CREATE INDEX IF NOT EXISTS idx_send_queue_status ON send_queue(status,deliver_after)",
   "CREATE INDEX IF NOT EXISTS idx_message_recalls_message ON message_recalls(message_id,created_at DESC)",
   "CREATE INDEX IF NOT EXISTS idx_suppression_email ON suppression_list(email)",
+  "CREATE INDEX IF NOT EXISTS idx_users_email_lower ON users(lower(email))",
+  "CREATE INDEX IF NOT EXISTS idx_mailboxes_user_active ON mailboxes(user_id,is_active)",
+  "CREATE INDEX IF NOT EXISTS idx_managed_domains_domain ON managed_domains(domain)",
   "INSERT OR IGNORE INTO settings(key,value_json) VALUES ('setup_completed','false'),('mail_domain','\"skyfirst.io.vn\"'),('official_domain','\"mail.skyfirst.io.vn\"'),('app_name','\"Sky First Mail\"')",
   "INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('skyfirst.io.vn','verified',1,1)",
   "INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('nhahanngu.io.vn','configured',1,0)"
@@ -1093,8 +1096,17 @@ async function routeApi(request,env){
         return json({ok:true,id});
       }catch(e){if(String(e).toLowerCase().includes('unique'))return badRequest('Email hoặc địa chỉ mailbox đã tồn tại.');throw e}
     }
-    const aum=path.match(/^\/api\/admin\/users\/(\d+)$/);if(aum&&request.method==='PATCH'){
-      const id=Number(aum[1]),target=await env.DB.prepare(`SELECT * FROM users WHERE id=?`).bind(id).first();if(!target)return notFound();if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được sửa tài khoản quản trị.');const b=await bodyJson(request),f=[],v=[];
+    const aum=path.match(/^\/api\/admin\/users\/([^/]+)\/?$/);if(aum&&request.method==='PATCH'){
+      const rawParam=decodeURIComponent(aum[1]).trim(),numId=Number(rawParam);
+      let target=null;
+      if(!Number.isNaN(numId)&&Number.isInteger(numId)&&numId>0){
+        target=await env.DB.prepare(`SELECT * FROM users WHERE id=? OR lower(email)=lower(?)`).bind(numId,rawParam.toLowerCase()).first();
+      }else{
+        target=await env.DB.prepare(`SELECT * FROM users WHERE lower(email)=lower(?)`).bind(rawParam.toLowerCase()).first();
+      }
+      if(!target)return notFound('Không tìm thấy tài khoản. Tài khoản có thể đã được xóa hoặc không tồn tại.');
+      const id=Number(target.id);
+      if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được sửa tài khoản quản trị.');const b=await bodyJson(request),f=[],v=[];
       if(typeof b.displayName==='string'){const n=b.displayName.trim();if(n.length<2||n.length>80)return badRequest('Tên phải từ 2 đến 80 ký tự.');f.push('display_name=?');v.push(n)}
       if(b.role!==undefined){if(!ROLES.includes(b.role))return badRequest('Vai trò không hợp lệ.');if(user.role!=='super_admin'&&b.role!==target.role&&b.role!=='user')return forbidden('Chỉ Siêu quản trị viên được cấp quyền quản trị.');f.push('role=?');v.push(b.role)}
       if(['active','disabled'].includes(b.status)){f.push('status=?');v.push(b.status)}
@@ -1116,10 +1128,16 @@ async function routeApi(request,env){
       f.push('updated_at=CURRENT_TIMESTAMP');const update=await env.DB.prepare(`UPDATE users SET ${f.join(',')} WHERE id=?`).bind(...v,id).run();if(Number(update.meta?.changes||0)!==1)return notFound('Tài khoản không còn tồn tại hoặc đã thay đổi.');try{await notify(env,id,'Quyền tài khoản đã được cập nhật','Quản trị viên vừa thay đổi cài đặt tài khoản của bạn.','account')}catch(error){console.error('ADMIN_USER_UPDATE_NOTIFY_FAILED',{id,message:error?.message||String(error)})}try{await audit(env,user.id,'admin.user.updated','user',id,b)}catch(error){console.error('ADMIN_USER_UPDATE_AUDIT_FAILED',{id,actorUserId:user.id,message:error?.message||String(error)})}return json({ok:true})
     }
     if(aum&&request.method==='DELETE'){
-      const id=Number(aum[1]);
+      const rawParam=decodeURIComponent(aum[1]).trim(),numId=Number(rawParam);
+      let target=null;
+      if(!Number.isNaN(numId)&&Number.isInteger(numId)&&numId>0){
+        target=await env.DB.prepare(`SELECT * FROM users WHERE id=? OR lower(email)=lower(?)`).bind(numId,rawParam.toLowerCase()).first();
+      }else{
+        target=await env.DB.prepare(`SELECT * FROM users WHERE lower(email)=lower(?)`).bind(rawParam.toLowerCase()).first();
+      }
+      if(!target)return json({ok:false,deleted:false,code:'USER_NOT_FOUND',error:'Không tìm thấy tài khoản. Tài khoản có thể đã được xóa hoặc không tồn tại.'},404);
+      const id=Number(target.id);
       if(id===Number(user.id))return badRequest('Không thể xóa chính tài khoản đang đăng nhập.');
-      const target=await env.DB.prepare(`SELECT * FROM users WHERE id=?`).bind(id).first();
-      if(!target)return notFound('Không tìm thấy tài khoản.');
       if(target.role!=='user'&&user.role!=='super_admin')return forbidden('Chỉ Siêu quản trị viên được xóa tài khoản quản trị.');
       const b=await bodyJson(request);if(b.confirm!==true && normalizeEmail(b.confirmEmail)!==normalizeEmail(target.email))return badRequest('Yêu cầu xác nhận xóa không hợp lệ. Hãy xác nhận trong giao diện quản trị rồi thử lại.');
       const canDeleteSql=`(role<>'super_admin' OR status<>'active' OR (SELECT count(*) FROM users WHERE role='super_admin' AND status='active')>1)`;
@@ -1541,7 +1559,7 @@ async function handleInboundEmail(message, env, ctx) {
   const senderAddress = extractEmailAddress(sender);
   let storageKey = null;
   try {
-    await ensureSchema(env);
+    if(!schemaReady) await ensureSchema(env);
     const blockedSender = await env.DB.prepare(`SELECT reason FROM suppression_list WHERE lower(email)=lower(?) AND reason='manual_block' LIMIT 1`).bind(senderAddress).first().catch(() => null);
     if (blockedSender) { message.setReject('Sender is blocked by Sky First Mail policy.'); return; }
 
@@ -1572,7 +1590,7 @@ async function handleInboundEmail(message, env, ctx) {
     const contentSha256=await digest(rawEmail);
     const receiptIdentity=messageId?`message-id:${normalizeContentId(messageId)}`:`raw:${contentSha256}`;
     const receiptDigest=await digest(new TextEncoder().encode(receiptIdentity));
-    await env.DB.prepare(`DELETE FROM inbound_receipts WHERE created_at<datetime('now','-30 days')`).run();
+    if(Math.random()<0.02){await env.DB.prepare(`DELETE FROM inbound_receipts WHERE created_at<datetime('now','-30 days')`).run().catch(()=>{});}
     storageKey=`messages/inbound/${mailbox.id}/${Date.now()}-${crypto.randomUUID()}.eml`;
     await env.MAIL_STORAGE.put(storageKey,rawEmail,{httpMetadata:{contentType:'message/rfc822'},customMetadata:{recipient,sender}});
 

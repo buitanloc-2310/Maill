@@ -192,6 +192,38 @@ test('mail API and persisted delivery',async t=>{
   assert.match(htmlText,/skyfirst\.io\.vn/);
  });
 
+ await t.test('User deletion by ID and email, subdomain creation and domain lifecycle',async()=>{
+  // 1. Add subdomain app.skyfirst.io.vn
+  const addSub=await request('/api/admin/domains','POST',{domain:'app.skyfirst.io.vn',receiveEnabled:true,sendEnabled:true});
+  assert.equal(addSub.r.status,200);
+  assert.equal(addSub.data.domain,'app.skyfirst.io.vn');
+  const subId=addSub.data.id;
+
+  // 2. Verify subdomain app.skyfirst.io.vn
+  const verSub=await request(`/api/admin/domains/${subId}/verify`,'POST',{});
+  assert.equal(verSub.r.status,200);
+
+  // 3. Create user on subdomain: quanly@app.skyfirst.io.vn
+  const createSubUser=await request('/api/admin/users','POST',{displayName:'Quản Lý App',email:'quanly@app.skyfirst.io.vn',password:'Subdomain123!'});
+  assert.equal(createSubUser.r.status,200);
+  const subUserId=createSubUser.data.id;
+
+  // 4. Test deleting user by email (quanly@app.skyfirst.io.vn)
+  const delByEmail=await request(`/api/admin/users/quanly@app.skyfirst.io.vn`,'DELETE',{confirm:true});
+  assert.equal(delByEmail.r.status,200);
+  assert.equal(delByEmail.data.deleted,true);
+
+  // 5. Test deleting non-existent user returns exact USER_NOT_FOUND error
+  const delGhost=await request(`/api/admin/users/ghost@skyfirst.io.vn`,'DELETE',{confirm:true});
+  assert.equal(delGhost.r.status,404);
+  assert.equal(delGhost.data.code,'USER_NOT_FOUND');
+
+  // 6. Test domain deletion for subdomain without dependents
+  const delSub=await request(`/api/admin/domains/${subId}`,'DELETE',{});
+  assert.equal(delSub.r.status,200);
+  assert.equal(delSub.data.removed,true);
+ });
+
  await t.test('expired session on current day rejected',async()=>{db.sql.exec("UPDATE sessions SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute')");assert.equal((await request('/api/me')).r.status,401)});
  }finally{globalThis.fetch=originalFetch;}
 });

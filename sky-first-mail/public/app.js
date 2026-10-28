@@ -65,6 +65,14 @@ async function boot(){
   setSplashStatus('Đang tải danh sách hộp thư…');
   const mb=await api('/api/mailboxes',{timeoutMs:12000});S.mailboxes=mb.mailboxes||[];
   render();
+   // Live background polling: automatically check for new incoming emails every 10 seconds so user never waits!
+   if(!window._sfm_poll){
+     window._sfm_poll=setInterval(async()=>{
+       if(!document.hidden && S.me && S.folder==='inbox' && !S.selected && !S.q){
+         try{ await loadMessages(null,false,{silent:true}); await loadSummary(); }catch{}
+       }
+     },10000);
+   }
   const rows=document.querySelector('#rows');if(rows)rows.innerHTML='<div class="empty small"><h3>Đang tải thư…</h3><p>Đang lấy danh sách thư mới nhất.</p></div>';
   try{await loadMessages(null,false,{timeoutMs:15000});loadSummary()}catch(e){if(e.status===401)return login();showMessagesError(e)}
  }catch(e){showBootError(e)}
@@ -305,7 +313,13 @@ async function admin(){
  const setError=(message)=>{const el=root.querySelector('#adminError');el.hidden=!message;el.textContent=message||''};
  const refresh=async()=>{
   setError('');
-  try{[dash,users,aliases,domains,audit,system]=await Promise.all([api('/api/admin/dashboard'),api('/api/admin/users'),api('/api/admin/aliases'),api('/api/admin/domains'),api('/api/admin/audit'),api('/api/admin/system')]);}
+  try{
+     [dash,users,domains]=await Promise.all([
+       api('/api/admin/dashboard'),
+       api('/api/admin/users'),
+       domains||api('/api/admin/domains')
+     ]);
+   }
   catch(e){body.innerHTML=`<section class="admin-error-panel"><h2>Chưa tải được dữ liệu quản trị</h2><p></p><button class="primary" id="retryAdmin">Thử tải lại</button></section>`;body.querySelector('p').textContent=`${e.message}${e.status?` (HTTP ${e.status})`:''}`;body.querySelector('#retryAdmin').onclick=refresh;setError('Một hoặc nhiều dịch vụ quản trị không phản hồi. Chi tiết được hiển thị bên dưới.');return false}
   const st=dash.stats;root.querySelector('#adminStats').innerHTML=`<div><b>${st.users}</b><span>Tài khoản (${st.verifiedUsers||0} tích xanh)</span></div><div><b>${st.activeMailboxes}</b><span>Hộp thư hoạt động</span></div><div><b>${st.messages}</b><span>Thư (${st.queuedMessages||0} hàng đợi)</span></div><div><b>${fmt(st.bytes)}</b><span>Dữ liệu thư</span></div><div><b>${st.unread}</b><span>Chưa đọc (${st.openSecurityAlerts||0} cảnh báo)</span></div>`;
   root.querySelector('#newu').onclick=()=>newUser(root,domains.domains);
@@ -330,15 +344,30 @@ async function admin(){
    body.innerHTML=`<div class="bulk-toolbar"><label class="bulk-check"><input type="checkbox" id="selectAllUsers"> Chọn tất cả tài khoản</label><button class="secondary" id="bulkCreateUsers" type="button">＋ Tạo hàng loạt</button><button class="dangerbtn" id="bulkDeleteUsers" type="button">Xóa đã chọn</button><span id="bulkStatus" role="status" aria-live="polite"></span></div><div class="account-list">${users.users.map(u=>`<div class="account-row"><input type="checkbox" class="user-select" data-user-select="${u.id}" ${Number(u.id)===Number(S.me.id)?'disabled title="Không thể chọn tài khoản đang đăng nhập"':''}><div class="mini-avatar">${esc(initials(u.display_name))}</div><div class="account-identity"><b>${esc(u.display_name)}${u.is_verified&&u.verification_status==='verified'?'<span class="sf-verified-badge icon-only" title="Đã xác minh tích xanh">✓</span>':''}</b><span>${esc(u.email)} ${u.department?'· '+esc(u.department):''}</span></div><span class="pill">${esc(roleLabel(u.role))} · ${esc(accountTypeLabel(u.account_type))}</span><span class="pill ${u.status==='active'?'ok':''}">${esc(statusLabel(u.status))}</span><button class="secondary" data-edit="${u.id}" type="button">Sửa</button></div>`).join('')||'<p class="empty-admin">Chưa có tài khoản.</p>'}</div>`;
    body.querySelector('#selectAllUsers').onchange=e=>body.querySelectorAll('.user-select:not(:disabled)').forEach(c=>c.checked=e.target.checked);
    body.querySelector('#bulkCreateUsers').onclick=()=>bulkCreateUsers(root,domains.domains);
-   body.querySelector('#bulkDeleteUsers').onclick=async()=>{
-    const ids=[...body.querySelectorAll('.user-select:checked')].map(c=>Number(c.dataset.userSelect));const status=body.querySelector('#bulkStatus');
-    if(!ids.length){status.textContent='Hãy chọn ít nhất một tài khoản.';return}
-    if(!await inlineConfirm(root,`Xóa vĩnh viễn ${ids.length} tài khoản đã chọn cùng hộp thư và dữ liệu liên quan?`))return;
-    const btn=body.querySelector('#bulkDeleteUsers');btn.disabled=true;btn.textContent='Đang xóa…';let ok=0,failed=[];
-    for(const id of ids){try{const result=await api(`/api/admin/users/${id}`,{method:'DELETE',body:JSON.stringify({confirm:true})});if(!result.deleted)throw new Error('Máy chủ chưa xác nhận xóa thành công.');ok++}catch(e){failed.push(`${id}: ${apiErrorText(e)}`)}}
-    status.textContent=`Xóa thành công ${ok}/${ids.length} tài khoản.`+(failed.length?` Còn lỗi: ${failed.join(' · ')}`:'');
-    try{[dash,users]=await Promise.all([api('/api/admin/dashboard'),api('/api/admin/users')]);const st=dash.stats;root.querySelector('#adminStats').innerHTML=`<div><b>${st.users}</b><span>Tài khoản</span></div><div><b>${st.activeMailboxes}</b><span>Hộp thư hoạt động</span></div><div><b>${st.messages}</b><span>Thư</span></div><div><b>${fmt(st.bytes)}</b><span>Dữ liệu thư</span></div><div><b>${st.unread}</b><span>Thư chưa đọc</span></div>`;open('users');if(failed.length)appNotice(`Đã xóa ${ok}/${ids.length}. Các tài khoản còn lỗi: ${failed.join(' · ')}`,'error');else appNotice(`Đã xóa thành công ${ok} tài khoản.`,'success')}catch(e){setError(`Đã xử lý xóa nhưng không làm mới được danh sách: ${e.message}`);appNotice(`Không làm mới được danh sách: ${e.message}`,'error')}
-   };
+    body.querySelector('#bulkDeleteUsers').onclick=async()=>{
+     const checkedBoxes=[...body.querySelectorAll('.user-select:checked')];
+     const ids=checkedBoxes.map(c=>Number(c.dataset.userSelect));const status=body.querySelector('#bulkStatus');
+     if(!ids.length){status.textContent='Hãy chọn ít nhất một tài khoản.';return}
+     if(!await inlineConfirm(root,`Xóa vĩnh viễn ${ids.length} tài khoản đã chọn cùng hộp thư và dữ liệu liên quan?`))return;
+     const btn=body.querySelector('#bulkDeleteUsers');btn.disabled=true;btn.textContent='Đang xóa…';let ok=0,failed=[];
+     for(const id of ids){
+       const uRow=users?.users?.find(x=>Number(x.id)===id);
+       try{
+         const result=await api(`/api/admin/users/${id}`,{method:'DELETE',body:JSON.stringify({confirm:true,confirmEmail:uRow?.email})});
+         if(!result.deleted)throw new Error(result.error||'Máy chủ chưa xác nhận xóa thành công.');
+         ok++;
+         body.querySelectorAll(`.account-row input[data-user-select="${id}"]`).forEach(c=>c.closest('.account-row')?.remove());
+       }catch(e){failed.push(`${uRow?.email||id}: ${apiErrorText(e)}`)}
+     }
+     if(users?.users){
+       users.users=users.users.filter(x=>!ids.includes(Number(x.id)));
+       const countEl=root.querySelector('#adminStats b');if(countEl)countEl.textContent=String(users.users.length);
+     }
+     status.textContent=`Xóa thành công ${ok}/${ids.length} tài khoản.`+(failed.length?` Còn lỗi: ${failed.join(' · ')}`:'');
+     btn.disabled=false;btn.textContent='Xóa đã chọn';
+     if(failed.length)appNotice(`Đã xóa ${ok}/${ids.length}. Các tài khoản còn lỗi: ${failed.join(' · ')}`,'error');
+     else appNotice(`Đã xóa thành công ${ok} tài khoản.`,'success');
+    };
    body.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{const user=users.users.find(x=>Number(x.id)===Number(b.dataset.edit));if(user)editUser(user,root)});
   }else if(name==='verifications'){
    const vData=await api('/api/admin/verifications');
@@ -367,16 +396,56 @@ async function admin(){
    };
    body.querySelectorAll('[data-revoke-del]').forEach(b=>b.onclick=async()=>{if(!await inlineConfirm(root,'Thu hồi quyền gửi thay này?'))return;await api(`/api/admin/delegations/${b.dataset.revokeDel}`,{method:'DELETE'});open('delegations')});
   }else if(name==='aliases'){
+   if(!aliases)aliases=await api('/api/admin/aliases');
    body.innerHTML=`<div class="domain-head"><div><h2>Bí danh thư</h2><p>Địa chỉ phụ được chuyển đến hộp thư đích.</p></div><button class="primary" id="newAlias" type="button">＋ Tạo bí danh</button></div>${aliases.aliases.map(a=>`<div class="account-row alias-row"><div class="account-identity"><b>${esc(a.address)}</b><span>→ ${esc(a.mailbox_address)} · ${esc(a.display_name)}</span></div><button class="dangerbtn" data-delete-alias="${a.id}" type="button">Xóa</button></div>`).join('')||'<p class="empty-admin">Chưa có bí danh.</p>'}`;
    body.querySelector('#newAlias').onclick=()=>newAlias(root,users.users);
    body.querySelectorAll('[data-delete-alias]').forEach(b=>b.onclick=async()=>{if(!await inlineConfirm(root,'Xóa bí danh này?'))return;b.disabled=true;try{await api(`/api/admin/aliases/${b.dataset.deleteAlias}`,{method:'DELETE'});aliases=await api('/api/admin/aliases');await open('aliases')}catch(e){setError(`Không xóa được bí danh: ${e.message}`);b.disabled=false}});
-  }else if(name==='domains'){
-   body.innerHTML=`<div class="domain-head"><div><h2>Tên miền email & Cấu hình BIMI/DNS</h2><p>Thêm tên miền, xác minh quyền sở hữu và kiểm tra SPF, DKIM, DMARC, BIMI + VMC để tối ưu hiển thị thương hiệu trên Gmail và các dịch vụ email ngoài.</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a href="/verified?domain=skyfirst.io.vn" target="_blank" class="secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:9px 14px">🌐 Tra cứu chứng thư ↗</a><button class="primary" id="newDomain" type="button">＋ Thêm tên miền</button></div></div><div class="domain-grid">${domains.domains.map(d=>`<article class="domain-card"><div class="domain-icon">@</div><div class="domain-info"><b>${esc(d.domain)}</b><span>${d.receive_enabled?'Nhận thư đang bật':'Nhận thư đang tắt'} · ${d.send_enabled?'Gửi thư đang bật':'Gửi thư đang tắt'} · ${['skyfirst.io.vn','mail.skyfirst.io.vn'].includes(d.domain.toLowerCase())?'Đã xác minh':esc(d.status||'chưa xác minh')}</span></div><label class="switch-row">Nhận <input type="checkbox" data-domain-receive="${d.id}" ${d.receive_enabled?'checked':''}></label><label class="switch-row">Gửi <input type="checkbox" data-domain-send="${d.id}" ${d.send_enabled?'checked':''} ${d.status==='verified'||['skyfirst.io.vn','mail.skyfirst.io.vn'].includes(d.domain.toLowerCase())?'':'disabled'}></label>${renderDomainCheck(d)}</article>`).join('')||'<p class="empty-admin">Chưa có tên miền.</p>'}</div>`;
-   body.querySelector('#newDomain').onclick=()=>newDomain(root,refreshDomains);
-   body.querySelectorAll('[data-domain-receive]').forEach(c=>c.onchange=async()=>{c.disabled=true;try{await api(`/api/admin/domains/${c.dataset.domainReceive}`,{method:'PATCH',body:JSON.stringify({receiveEnabled:c.checked})});domains=await api('/api/admin/domains');await open('domains')}catch(e){c.checked=!c.checked;setError(`Không cập nhật được trạng thái nhận thư: ${e.message}`);c.disabled=false}});
-   body.querySelectorAll('[data-domain-send]').forEach(c=>c.onchange=async()=>{c.disabled=true;try{await api(`/api/admin/domains/${c.dataset.domainSend}`,{method:'PATCH',body:JSON.stringify({sendEnabled:c.checked})});domains=await api('/api/admin/domains');await open('domains')}catch(e){c.checked=!c.checked;setError(`Không cập nhật được trạng thái gửi thư: ${e.message}`);c.disabled=false}});
-   body.querySelectorAll('[data-domain-verify]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{domainChecks[b.dataset.domainVerify]=await api(`/api/admin/domains/${b.dataset.domainVerify}/verify`,{method:'POST'});domains=await api('/api/admin/domains')}catch(e){domainChecks[b.dataset.domainVerify]={message:e.message}}await open('domains')});
-   body.querySelectorAll('[data-domain-health]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{domainChecks[b.dataset.domainHealth]=await api(`/api/admin/domains/${b.dataset.domainHealth}/health`)}catch(e){domainChecks[b.dataset.domainHealth]={message:e.message}}await open('domains')});
+   }else if(name==='domains'){
+    body.innerHTML=`<div class="domain-head"><div><h2>Quản lý Tên miền Chính & Tên miền Phụ</h2><p>Thêm, cấu hình, tạm ngưng, khôi phục và xóa tên miền an toàn. Hỗ trợ đầy đủ tên miền chính (skyfirst.io.vn) và các tên miền phụ (app.skyfirst.io.vn, notify.skyfirst.io.vn...).</p></div><div style="display:flex;gap:8px;flex-wrap:wrap"><a href="/verified?domain=skyfirst.io.vn" target="_blank" class="secondary" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:9px 14px">🌐 Tra cứu chứng thư ↗</a><button class="primary" id="newDomain" type="button">＋ Thêm tên miền</button></div></div><div class="bulk-toolbar" style="margin-bottom:18px"><input id="domainSearch" placeholder="Tìm theo tên miền hoặc tên miền phụ..." style="max-width:360px"><span class="muted">${domains.domains.length} tên miền đang quản lý</span></div><div class="domain-grid" id="domainGrid">${domains.domains.map(d=>`<article class="domain-card" data-domain-card="${d.id}" data-domain-name="${esc(d.domain.toLowerCase())}"><div class="domain-icon">@</div><div class="domain-info"><b>${esc(d.domain)}</b><span>${d.receive_enabled?'Nhận thư đang bật':'Nhận thư đang tắt'} · ${d.send_enabled?'Gửi thư đang bật':'Gửi thư đang tắt'} · ${d.status==='disabled'?'Đã tạm khóa':['skyfirst.io.vn','mail.skyfirst.io.vn'].includes(d.domain.toLowerCase())?'Đã xác minh':esc(d.status||'chưa xác minh')}</span></div><div class="domain-switches"><label class="switch-row">Nhận <input type="checkbox" data-domain-receive="${d.id}" ${d.receive_enabled?'checked':''}></label><label class="switch-row">Gửi <input type="checkbox" data-domain-send="${d.id}" ${d.send_enabled?'checked':''} ${d.status==='verified'||['skyfirst.io.vn','mail.skyfirst.io.vn'].includes(d.domain.toLowerCase())?'':'disabled'}></label></div>${renderDomainCheck(d)}<div class="domain-mgmt-actions" style="margin-top:14px;padding-top:12px;border-top:1px solid #dbe9f6;display:flex;gap:8px;flex-wrap:wrap"><button class="secondary" data-domain-edit="${d.id}" type="button">⚙ Cấu hình</button><button class="secondary" data-domain-toggle-status="${d.id}" type="button">${d.status==='disabled'?'▶ Kích hoạt':'⏸ Tạm khóa'}</button>${['skyfirst.io.vn','mail.skyfirst.io.vn'].includes(d.domain.toLowerCase())?'':`<button class="dangerbtn" data-domain-del="${d.id}" type="button">🗑 Xóa tên miền</button>`}</div></article>`).join('')||'<p class="empty-admin">Chưa có tên miền.</p>'}</div>`;
+    body.querySelector('#domainSearch').oninput=e=>{const q=e.target.value.trim().toLowerCase();body.querySelectorAll('#domainGrid .domain-card').forEach(card=>{card.hidden=q&&!card.dataset.domainName.includes(q)})};
+    body.querySelector('#newDomain').onclick=()=>newDomain(root,refreshDomains);
+    body.querySelectorAll('[data-domain-receive]').forEach(c=>c.onchange=async()=>{c.disabled=true;try{await api(`/api/admin/domains/${c.dataset.domainReceive}`,{method:'PATCH',body:JSON.stringify({receiveEnabled:c.checked})});domains=await api('/api/admin/domains');await open('domains')}catch(e){c.checked=!c.checked;setError(`Không cập nhật được trạng thái nhận thư: ${e.message}`);c.disabled=false}});
+    body.querySelectorAll('[data-domain-send]').forEach(c=>c.onchange=async()=>{c.disabled=true;try{await api(`/api/admin/domains/${c.dataset.domainSend}`,{method:'PATCH',body:JSON.stringify({sendEnabled:c.checked})});domains=await api('/api/admin/domains');await open('domains')}catch(e){c.checked=!c.checked;setError(`Không cập nhật được trạng thái gửi thư: ${e.message}`);c.disabled=false}});
+    body.querySelectorAll('[data-domain-verify]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{domainChecks[b.dataset.domainVerify]=await api(`/api/admin/domains/${b.dataset.domainVerify}/verify`,{method:'POST'});domains=await api('/api/admin/domains')}catch(e){domainChecks[b.dataset.domainVerify]={message:e.message}}await open('domains')});
+    body.querySelectorAll('[data-domain-health]').forEach(b=>b.onclick=async()=>{b.disabled=true;try{domainChecks[b.dataset.domainHealth]=await api(`/api/admin/domains/${b.dataset.domainHealth}/health`)}catch(e){domainChecks[b.dataset.domainHealth]={message:e.message}}await open('domains')});
+    body.querySelectorAll('[data-domain-edit]').forEach(b=>b.onclick=()=>{
+     const d=domains.domains.find(x=>x.id===Number(b.dataset.domainEdit));if(!d)return;
+     const w=modal(`<h2>Cấu hình tên miền: ${esc(d.domain)}</h2><label>Hạ tầng gửi thư (Transport)<select id="edTransport"><option value="resend" ${d.transport==='resend'?'selected':''}>Resend API</option><option value="gateway" ${d.transport==='gateway'?'selected':''}>SMTP / MTA Gateway</option></select></label><label>DKIM Selector<input id="edDkim" value="${esc(d.dkim_selector||'resend')}"></label><label>Giới hạn gửi/ngày<input id="edLimit" type="number" value="${d.daily_send_limit||2000}"></label><label>URL Logo BIMI SVG<input id="edBimi" value="${esc(d.bimi_logo_url||'https://mail.skyfirst.io.vn/bimi-logo.svg')}"></label><label>URL Chứng thư VMC (nếu có)<input id="edVmc" value="${esc(d.bimi_vmc_url||'')}"></label><div id="edMsg"></div><div class="account-actions"><button class="primary" id="saveDomCfg">Lưu cấu hình</button><button class="secondary" id="closeDomCfg">Hủy</button></div>`);
+     w.classList.add('admin-dialog-wrap');
+     w.querySelector('#closeDomCfg').onclick=()=>w.remove();
+     w.querySelector('#saveDomCfg').onclick=async()=>{
+       try{
+         await api(`/api/admin/domains/${d.id}`,{method:'PATCH',body:JSON.stringify({transport:w.querySelector('#edTransport').value,dkimSelector:w.querySelector('#edDkim').value.trim(),dailySendLimit:Number(w.querySelector('#edLimit').value)||2000,bimiLogoUrl:w.querySelector('#edBimi').value.trim(),bimiVmcUrl:w.querySelector('#edVmc').value.trim()})});
+         w.remove();appNotice(`Đã lưu cấu hình tên miền ${d.domain}.`,'success');refreshDomains();
+       }catch(e){w.querySelector('#edMsg').innerHTML=msg(e.message)}
+     };
+    });
+    body.querySelectorAll('[data-domain-toggle-status]').forEach(b=>b.onclick=async()=>{
+     const d=domains.domains.find(x=>x.id===Number(b.dataset.domainToggleStatus));if(!d)return;
+     const newDisabled=d.status!=='disabled';
+     if(newDisabled&&!await inlineConfirm(root,`Tạm ngưng tên miền ${d.domain}? Hộp thư thuộc tên miền này sẽ tạm thời ngừng gửi và nhận thư.`))return;
+     try{
+       await api(`/api/admin/domains/${d.id}`,{method:'PATCH',body:JSON.stringify({receiveEnabled:!newDisabled,sendEnabled:!newDisabled})});
+       appNotice(`Đã ${newDisabled?'tạm khóa':'kích hoạt lại'} tên miền ${d.domain}.`,'success');
+       refreshDomains();
+     }catch(e){appNotice(e.message,'error')}
+    });
+    body.querySelectorAll('[data-domain-del]').forEach(b=>b.onclick=async()=>{
+     const d=domains.domains.find(x=>x.id===Number(b.dataset.domainDel));if(!d)return;
+     if(!await inlineConfirm(root,`Xóa tên miền ${d.domain} khỏi hệ thống? Thao tác này sẽ kiểm tra các hộp thư phụ thuộc trước khi thực hiện.`))return;
+     b.disabled=true;
+     try{
+       const res=await api(`/api/admin/domains/${d.id}`,{method:'DELETE'});
+       if(res.removed){
+         body.querySelector(`article[data-domain-card="${d.id}"]`)?.remove();
+         domains.domains=domains.domains.filter(x=>x.id!==d.id);
+         appNotice(`Đã xóa vĩnh viễn tên miền ${d.domain}.`,'success');
+       }else if(res.disabledOnly){
+         appNotice(res.message||'Tên miền có tài khoản phụ thuộc nên đã được chuyển sang chế độ tạm khóa an toàn.','info');
+         refreshDomains();
+       }
+     }catch(e){appNotice(`Không thể xóa tên miền: ${e.message}`,'error');b.disabled=false}
+    });
   }else if(name==='antispam'){
    const [rep,qData,supps]=await Promise.all([api('/api/admin/reputation'),api('/api/admin/queue'),api('/api/admin/suppressions')]);
    const m=rep.metrics||{},pol=rep.policy||{};
@@ -392,6 +461,7 @@ async function admin(){
    body.querySelectorAll('[data-resolve-alert]').forEach(b=>b.onclick=async()=>{await api(`/api/admin/security-alerts/${b.dataset.resolveAlert}/resolve`,{method:'POST'});open('system')});
    body.querySelectorAll('[data-admin-kill-sess]').forEach(b=>b.onclick=async()=>{await api(`/api/admin/sessions/${b.dataset.adminKillSess}`,{method:'DELETE'});open('system')});
   }else if(name==='audit'){
+   if(!audit)audit=await api('/api/admin/audit');
    body.innerHTML=`<h2>Nhật ký hoạt động</h2>${audit.logs.map(a=>`<div class="audit"><b>${esc(a.action)}</b><span>${esc(a.user_name||a.user_email||'Hệ thống')}</span><time>${esc(when(a.created_at))}</time></div>`).join('')||'<p class="empty-admin">Chưa có nhật ký.</p>'}`;
   }
  }
@@ -429,7 +499,19 @@ function bulkCreateUsers(parent,domains=[]){
   else{box.value=failedRows.join('\n');btn.textContent='Thử tạo lại các dòng lỗi';if(ok)appNotice(`Đã tạo ${ok} tài khoản; còn ${failedRows.length} dòng cần xử lý.`,'info')}
  };
 }
-function newDomain(parent,done){const w=modal(`<div class="domain-create"><div class="domain-big-icon">@</div><h2>Thêm tên miền email</h2><p>Ví dụ: <b>nhahanngu.io.vn</b>. Sau khi thêm, hãy công bố bản ghi TXT xác minh và kiểm tra DNS trước khi bật gửi thư.</p><label>Tên miền<input id="domainName" autocomplete="off" placeholder="nhahanngu.io.vn"></label><div class="perm"><label><input id="domainReceive" type="checkbox" checked> Bật nhận thư</label><label><input id="domainSend" type="checkbox" disabled> Gửi thư (mở sau khi xác minh TXT)</label></div><div id="dm"></div><button class="primary full" id="addDomain">Thêm tên miền</button></div>`);w.classList.add('admin-dialog-wrap');w.querySelector('#addDomain').onclick=async()=>{const btn=w.querySelector('#addDomain');btn.disabled=true;try{await api('/api/admin/domains',{method:'POST',body:JSON.stringify({domain:w.querySelector('#domainName').value,receiveEnabled:w.querySelector('#domainReceive').checked,sendEnabled:w.querySelector('#domainSend').checked})});w.remove();await done()}catch(e){btn.disabled=false;w.querySelector('#dm').innerHTML=msg(e.message)}}}
+function newDomain(parent,done){
+  const w=modal(`<div class="domain-create"><div class="domain-big-icon">@</div><h2>Thêm tên miền hoặc tên miền phụ</h2><p class="muted">Hỗ trợ tên miền chính (ví dụ: <b>skyfirst.io.vn</b>) và các tên miền phụ (ví dụ: <b>app.skyfirst.io.vn</b>, <b>notify.skyfirst.io.vn</b>...). Mỗi tên miền được xác minh và quản lý gửi/nhận riêng biệt.</p><label>Tên miền hoặc tên miền phụ<input id="domainName" autocomplete="off" placeholder="app.skyfirst.io.vn"></label><div style="display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 12px"><span class="muted" style="font-size:11px">Gợi ý nhanh:</span><button type="button" class="secondary v4-mini" onclick="document.querySelector('#domainName').value='app.skyfirst.io.vn'">app.skyfirst.io.vn</button><button type="button" class="secondary v4-mini" onclick="document.querySelector('#domainName').value='notify.skyfirst.io.vn'">notify.skyfirst.io.vn</button><button type="button" class="secondary v4-mini" onclick="document.querySelector('#domainName').value='mail.skyfirst.io.vn'">mail.skyfirst.io.vn</button></div><label>Mục đích sử dụng<select id="domainPurpose"><option value="user_mail">Hộp thư tài khoản người dùng & phòng ban</option><option value="notification">Gửi thông báo tự động hệ thống (notify)</option><option value="service">Dịch vụ tích hợp / Cổng ứng dụng</option></select></label><div class="perm"><label><input id="domainReceive" type="checkbox" checked> Bật nhận thư</label><label><input id="domainSend" type="checkbox"> Bật gửi thư</label></div><div id="dm"></div><button class="primary full" id="addDomain">Thêm tên miền</button></div>`);
+  w.classList.add('admin-dialog-wrap');
+  w.querySelector('#addDomain').onclick=async()=>{
+    const btn=w.querySelector('#addDomain');btn.disabled=true;
+    const name=w.querySelector('#domainName').value.trim().toLowerCase();
+    if(!name){w.querySelector('#dm').innerHTML=msg('Vui lòng nhập tên miền.');btn.disabled=false;return}
+    try{
+      await api('/api/admin/domains',{method:'POST',body:JSON.stringify({domain:name,receiveEnabled:w.querySelector('#domainReceive').checked,sendEnabled:w.querySelector('#domainSend').checked})});
+      w.remove();appNotice(`Đã thêm tên miền ${name}.`,'success');await done();
+    }catch(e){btn.disabled=false;w.querySelector('#dm').innerHTML=msg(e.message)}
+  };
+}
 function newUser(parent,domains=[]){
  const opts=domains.map(d=>`<option value="${esc(d.domain)}">@${esc(d.domain)}</option>`).join('');
  const w=modal(`<h2>Tạo tài khoản</h2><div id="em" role="status" aria-live="polite"></div><div class="grid2"><label>Họ tên<input id="n" maxlength="80" autocomplete="name"></label><label>Tài khoản<div class="email-builder"><input id="local" placeholder="ten.tai.khoan" autocomplete="off"><select id="domain">${opts}</select></div></label><label>Mật khẩu ban đầu<input id="p" type="password" minlength="10" autocomplete="new-password"></label><label>Vai trò<select id="r"><option value="user">Người dùng</option><option value="admin">Quản trị viên</option>${S.me.role==='super_admin'?'<option value="super_admin">Siêu quản trị viên</option>':''}</select></label><label>Loại tài khoản<select id="acctType"><option value="personal">Cá nhân</option><option value="organization">Tổ chức / Đơn vị</option><option value="service">Dịch vụ</option></select></label><label>Đơn vị / Phòng ban<input id="dept" placeholder="Ví dụ: Ban Đối ngoại"></label></div><div class="perm"><label><input id="an" type="checkbox" checked> Cho phép đổi tên</label><label><input id="aa" type="checkbox" checked> Cho phép đổi avatar</label><label><input id="ap" type="checkbox" checked> Cho phép đổi mật khẩu</label><label><input id="as" type="checkbox" checked> Cho phép chữ ký</label><label><input id="at" type="checkbox" checked> Cho phép đổi theme</label><label><input id="ma" type="checkbox" checked> Hộp thư hoạt động</label></div><div class="account-actions"><button class="primary" id="create" type="button">Tạo tài khoản</button><button class="secondary" id="cancelCreate" type="button">Hủy</button></div>`);
@@ -456,17 +538,22 @@ function editUser(u,parent){
  w.classList.add('admin-dialog-wrap');
  const message=w.querySelector('#editMsg');
  w.querySelector('#cancelEdit').onclick=()=>w.remove();
- w.querySelector('#deleteUser').onclick=async()=>{
-  if(Number(u.id)===Number(S.me.id)){message.innerHTML=msg('Không thể xóa tài khoản đang đăng nhập.');return}
-  if(!await inlineConfirm(w,`Xóa vĩnh viễn tài khoản ${u.email}, hộp thư và dữ liệu liên quan? Thao tác này không thể hoàn tác.`))return;
-  const btn=w.querySelector('#deleteUser');btn.disabled=true;btn.textContent='Đang xóa…';message.textContent='Đang xác nhận kết quả từ máy chủ…';
-  try{
-   const result=await api(`/api/admin/users/${u.id}`,{method:'DELETE',body:JSON.stringify({confirm:true})});
-   if(!result.deleted)throw Object.assign(new Error(result.error||'Máy chủ chưa xác nhận xóa thành công.'),{code:result.code||''});
-   w.remove();appNotice(`Đã xóa tài khoản ${u.email}.`,'success');
-   try{await admin()}catch(e){appNotice(`Tài khoản đã xóa, nhưng danh sách chưa làm mới được: ${e.message}`,'error')}
-  }catch(e){message.innerHTML=msg(`Không xóa được tài khoản: ${apiErrorText(e)}`);btn.disabled=false;btn.textContent='Thử xóa lại'}
- };
+  w.querySelector('#deleteUser').onclick=async()=>{
+   if(Number(u.id)===Number(S.me.id)){message.innerHTML=msg('Không thể xóa tài khoản đang đăng nhập.');return}
+   if(!await inlineConfirm(w,`Xóa vĩnh viễn tài khoản ${u.email}, hộp thư và dữ liệu liên quan? Thao tác này không thể hoàn tác.`))return;
+   const btn=w.querySelector('#deleteUser');btn.disabled=true;btn.textContent='Đang xóa…';message.textContent='Đang xác nhận kết quả từ máy chủ…';
+   try{
+    const result=await api(`/api/admin/users/${u.id}`,{method:'DELETE',body:JSON.stringify({confirm:true,confirmEmail:u.email})});
+    if(!result.deleted)throw Object.assign(new Error(result.error||'Máy chủ chưa xác nhận xóa thành công.'),{code:result.code||''});
+    w.remove();
+    document.querySelectorAll(`.account-row input[data-user-select="${u.id}"]`).forEach(c=>c.closest('.account-row')?.remove());
+    if(users?.users){
+      users.users=users.users.filter(x=>Number(x.id)!==Number(u.id));
+      const countEl=document.querySelector('#adminStats b');if(countEl)countEl.textContent=String(users.users.length);
+    }
+    appNotice(`Đã xóa vĩnh viễn tài khoản ${u.email}.`,'success');
+   }catch(e){message.innerHTML=msg(`Không xóa được tài khoản: ${apiErrorText(e)}`);btn.disabled=false;btn.textContent='Thử xóa lại'}
+  };
  w.querySelector('#save').onclick=async()=>{
   const save=w.querySelector('#save'),password=w.querySelector('#rp').value;save.disabled=true;save.textContent='Đang lưu…';message.textContent='';
   try{
