@@ -367,6 +367,8 @@ button:disabled{cursor:wait}.modal-wrap{overscroll-behavior:contain}.modal{max-h
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .sf-verified-badge{display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:2px 7px;margin-left:6px;border-radius:999px;background:linear-gradient(135deg,#0984e3,#0652dd);color:#fff;font-size:11px;font-weight:800;line-height:1.2;vertical-align:middle;box-shadow:0 2px 6px rgba(6,82,221,.22);cursor:help}
+.sf-verified-badge.gold{background:linear-gradient(135deg,#f59e0b,#d97706);box-shadow:0 2px 7px rgba(217,119,6,.35);color:#fff}
+.sf-verified-badge.service{background:linear-gradient(135deg,#8b5cf6,#6d28d9);box-shadow:0 2px 7px rgba(109,40,217,.3);color:#fff}
 .sf-verified-badge.icon-only{width:17px;height:17px;padding:0;font-size:10px}
 .sf-spoof-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;margin-left:6px;border-radius:999px;background:#fff0f0;border:1px solid #f5b7b1;color:#b01c2e;font-size:11px;font-weight:800;vertical-align:middle}
 .sf-recalled-pill{display:inline-block;padding:2px 8px;margin-left:6px;border-radius:999px;background:#fff8e7;border:1px solid #f0d59d;color:#7a5008;font-size:11px;font-weight:800}

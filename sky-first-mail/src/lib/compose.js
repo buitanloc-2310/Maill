@@ -101,13 +101,25 @@ export async function reliableCompose(request,env,user,services){
    return json(heldResponse);
   }
 
-  const effectiveDisplayName=fromMb.sender_kind==='delegated'?(fromMb.display_name||fromMb.sender_address):(user.display_name||fromMb.display_name);
+  const isVerifiedSender=!!(user.is_verified&&user.verification_status==='verified');
+  let effectiveDisplayName=fromMb.sender_kind==='delegated'?(fromMb.display_name||fromMb.sender_address):(user.display_name||fromMb.display_name);
+  if(isVerifiedSender&&!effectiveDisplayName.includes('✓')){effectiveDisplayName=`${effectiveDisplayName} ✓`;}
+  let outgoingHtml=html;
+  if(isVerifiedSender&&hasExternal&&!outgoingHtml.includes('Sky First Verified')){
+    const isOrgSender=user.account_type==='organization';
+    const sealBorder=isOrgSender?'#d97706':'#0984e3';
+    const sealBg=isOrgSender?'#fffbeb':'#f0f8ff';
+    const sealColor=isOrgSender?'linear-gradient(135deg,#f59e0b,#d97706)':'linear-gradient(135deg,#0984e3,#0652dd)';
+    const sealTitle=isOrgSender?'SKY FIRST GOLD VERIFIED — TỔ CHỨC CHÍNH THỨC':'SKY FIRST VERIFIED — DANH TÍNH ĐÃ XÁC MINH';
+    const sealHtml=`<div style="margin-bottom:20px;padding:12px 16px;border:1.5px solid ${sealBorder};border-radius:12px;background:${sealBg};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:580px;"><table cellpadding="0" cellspacing="0" border="0" style="width:100%;"><tr><td style="width:34px;vertical-align:middle;"><div style="width:26px;height:26px;border-radius:50%;background:${sealColor};color:#ffffff;text-align:center;line-height:26px;font-size:15px;font-weight:bold;">✓</div></td><td style="vertical-align:middle;line-height:1.4;"><div style="font-size:12px;font-weight:800;color:${isOrgSender?'#92400e':'#0b4d8c'};">${sealTitle}</div><div style="font-size:11px;color:${isOrgSender?'#78350f':'#4f769c'};margin-top:2px;">Email chính thức từ <b>${fromMb.sender_address}</b> · <a href="https://mail.skyfirst.io.vn/verified?address=${encodeURIComponent(fromMb.sender_address)}" style="color:${isOrgSender?'#d97706':'#0984e3'};font-weight:700;text-decoration:none;">Đối soát chứng thư số trực tuyến ↗</a></div></td></tr></table></div>`;
+    outgoingHtml=`${sealHtml}${outgoingHtml}`;
+  }
   if(hasExternal){
    const headers={};if(inReplyTo){headers['In-Reply-To']=inReplyTo;headers.References=references.join(' ');}if(priority==='high')headers['X-Priority']='1';if(listUnsubscribe){headers['List-Unsubscribe']=`<${listUnsubscribe}>`;headers['List-Unsubscribe-Post']='List-Unsubscribe=One-Click';}
    if(user.is_verified&&user.verification_status==='verified'){headers['X-SkyFirst-Verified']='true';headers['X-SkyFirst-Verification-Status']='verified';headers['X-SkyFirst-Verification-Type']=user.account_type||'personal';if(user.department)headers['X-SkyFirst-Department']=user.department;headers['BIMI-Selector']='v=BIMI1; s=default';}
    await env.DB.prepare("UPDATE send_operations SET status='sending',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run();
    providerStarted=true;
-   const result=await services.sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:effectiveDisplayName,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey:id});providerId=result.id;providerName=result.provider||'external';
+   const result=await services.sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:effectiveDisplayName,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html:outgoingHtml,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey:id});providerId=result.id;providerName=result.provider||'external';
    await env.DB.prepare("UPDATE send_operations SET provider_id=?,status='accepted',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(providerId,id).run();
   }
   const now=new Date().toISOString(),preview=(text||html.replace(/<[^>]+>/g,' ')).slice(0,180);
