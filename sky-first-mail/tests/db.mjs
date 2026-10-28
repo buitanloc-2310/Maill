@@ -119,7 +119,7 @@ if (!NativeDatabaseSync) {
 function callBridge(req) {
   Atomics.store(bridgeI32, 0, 0);
   bridgeWorker.postMessage(JSON.stringify(req));
-  const waitRes = Atomics.wait(bridgeI32, 0, 0, 5000);
+  const waitRes = Atomics.wait(bridgeI32, 0, 0, 15000);
   if (waitRes === 'timed-out') throw new Error('SQLite bridge timed out');
   const res = JSON.parse(Buffer.from(bridgeU8.buffer, 8, bridgeI32[1]).toString('utf8'));
   if (!res.ok) throw new Error(res.error);

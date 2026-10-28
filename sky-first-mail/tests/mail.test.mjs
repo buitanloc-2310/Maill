@@ -179,6 +179,11 @@ test('mail API and persisted delivery',async t=>{
   assert.equal(pubApi.r.status,200);
   assert.equal(pubApi.data.ok,true);
   assert.equal(pubApi.data.service,'Sky First Verified');
+  assert.equal(pubApi.data.status,'Đã xác minh chính thức');
+  assert.equal(pubApi.data.fields.managingUnit,'Trung tâm Thư điện tử Sky First');
+  assert.equal(pubApi.data.fields.issuingAuthority,'Trung tâm Thư điện tử Sky First');
+  assert.match(pubApi.data.fields.dossierCode,/^SFV-2026-/);
+  assert.equal(pubApi.data.securityHeadings.length,4);
   assert.equal(pubApi.data.account.isVerified,true);
   assert.equal(pubApi.data.account.verificationStatus,'verified');
   assert.equal(pubApi.data.domain.domain,'skyfirst.io.vn');
@@ -187,9 +192,16 @@ test('mail API and persisted delivery',async t=>{
   const pubHtml=await app.fetch(new Request('https://mail.skyfirst.io.vn/verified?address=admin@skyfirst.io.vn'),env,{waitUntil:()=>null});
   assert.equal(pubHtml.status,200);
   const htmlText=await pubHtml.text();
-  assert.match(htmlText,/Sky First Verified/);
+  assert.match(htmlText,/HỆ THỐNG XÁC MINH DANH TÍNH & NHẬN DIỆN THƯƠNG HIỆU - Sky First Verified/);
   assert.match(htmlText,/Đã xác minh chính thức/);
-  assert.match(htmlText,/skyfirst\.io\.vn/);
+  assert.match(htmlText,/Trung tâm Thư điện tử Sky First/);
+  assert.match(htmlText,/Minh bạch xác minh danh tính/);
+  assert.match(htmlText,/An toàn và bảo vệ thương hiệu/);
+  assert.match(htmlText,/Toàn vẹn dữ liệu email/);
+  assert.match(htmlText,/Xác thực và bảo mật hệ thống/);
+  assert.match(htmlText,/Tôi chưa thấy tích xanh/);
+  assert.match(htmlText,/support@skyfirst\.io\.vn/);
+  assert.match(htmlText,/lienhe@skyfirst\.io\.vn/);
  });
 
  await t.test('User deletion by ID and email, subdomain creation and domain lifecycle',async()=>{

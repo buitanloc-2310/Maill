@@ -431,53 +431,126 @@ async function routeApi(request,env){
   }
 
     // Sky First Verified — Public Verification Portal & Public API (Phần I, II, III & V)
+    // Sky First Verified — Public Verification Portal & Public API (Phần I, II, III & V)
   if(path==='/api/public/verified'&&request.method==='GET'){
     const queryAddr=normalizeEmail(url.searchParams.get('address')||url.searchParams.get('email')||'');
     const queryDomain=String(url.searchParams.get('domain')||'').trim().toLowerCase().replace(/^@/,'');
     if(!queryAddr&&!queryDomain)return badRequest('Cần cung cấp địa chỉ email (address) hoặc tên miền (domain) để tra cứu xác minh.');
     
-    let userResult=null;
+    let u=null;
     if(queryAddr){
-      const u=await env.DB.prepare(`SELECT id,email,display_name,role,is_verified,verification_status,account_type,department,verification_reason,verified_at,created_at FROM users WHERE lower(email)=lower(?) LIMIT 1`).bind(queryAddr).first();
-      if(u){
-        userResult={
-          email:u.email,
-          displayName:u.display_name,
-          isVerified:Number(u.is_verified)===1&&u.verification_status==='verified',
-          verificationStatus:u.verification_status||'unverified',
-          accountType:u.account_type||'personal',
-          department:u.department||null,
-          verificationReason:u.verification_reason||null,
-          verifiedAt:u.verified_at||null,
-          issuingAuthority:'Sky First Network (mail.skyfirst.io.vn)',
-          verificationUrl:`https://mail.skyfirst.io.vn/verified?address=${encodeURIComponent(u.email)}`
-        };
-      }
+      u=await env.DB.prepare(`SELECT id,email,display_name,role,is_verified,verification_status,account_type,department,verification_reason,verified_at,updated_at,created_at FROM users WHERE lower(email)=lower(?) LIMIT 1`).bind(queryAddr).first();
     }
     
-    let domainResult=null;
-    const targetDomain=queryDomain||(queryAddr?queryAddr.split('@')[1]:'');
+    const targetDomain=queryDomain||(queryAddr?queryAddr.split('@')[1]:'skyfirst.io.vn');
+    let d=null;
     if(targetDomain){
-      const d=await env.DB.prepare(`SELECT id,domain,status,send_enabled,receive_enabled,external_verification_status,verified_at,last_checked_at,health_json FROM managed_domains WHERE lower(domain)=lower(?) LIMIT 1`).bind(targetDomain).first();
-      if(d){
-        domainResult={
-          domain:d.domain,
-          status:d.status,
-          sendEnabled:Number(d.send_enabled)===1,
-          receiveEnabled:Number(d.receive_enabled)===1,
-          externalVerificationStatus:d.external_verification_status||'unchecked',
-          verifiedAt:d.verified_at||null,
-          bimiLogoUrl:`https://mail.skyfirst.io.vn/bimi-logo.svg`,
-          bimiRecord:`v=BIMI1; l=https://mail.skyfirst.io.vn/bimi-logo.svg`,
-          verificationUrl:`https://mail.skyfirst.io.vn/verified?domain=${encodeURIComponent(d.domain)}`
-        };
-      }
+      d=await env.DB.prepare(`SELECT id,domain,status,send_enabled,receive_enabled,external_verification_status,verified_at,last_checked_at,health_json FROM managed_domains WHERE lower(domain)=lower(?) LIMIT 1`).bind(targetDomain).first();
     }
+
+    const securityHeadings = [
+      'Minh bạch xác minh danh tính',
+      'An toàn và bảo vệ thương hiệu',
+      'Toàn vẹn dữ liệu email',
+      'Xác thực và bảo mật hệ thống'
+    ];
+
+    const supportInfo = {
+      email: 'support@skyfirst.io.vn',
+      contactEmail: 'lienhe@skyfirst.io.vn',
+      unit: 'Trung tâm Thư điện tử Sky First - Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First'
+    };
+
+    let domainResult=null;
+    if(d){
+      domainResult={
+        domain:d.domain,
+        status:d.status,
+        sendEnabled:Number(d.send_enabled)===1,
+        receiveEnabled:Number(d.receive_enabled)===1,
+        externalVerificationStatus:d.external_verification_status||'unchecked',
+        verifiedAt:d.verified_at||null,
+        bimiLogoUrl:`https://mail.skyfirst.io.vn/bimi-logo.svg`,
+        bimiRecord:`v=BIMI1; l=https://mail.skyfirst.io.vn/bimi-logo.svg`,
+        verificationUrl:`https://mail.skyfirst.io.vn/verified?domain=${encodeURIComponent(d.domain)}`
+      };
+    }
+
+    // Nếu không tìm thấy tài khoản (hoặc email ngoài không thuộc Sky First Mail)
+    if(!u){
+      return json({
+        ok:true,
+        service:'Sky First Verified',
+        query:queryAddr||queryDomain,
+        status:'Không tìm thấy hồ sơ',
+        statusCode:'not_found',
+        warning:'CHÚNG TÔI KHÔNG PHÁT HIỆN EMAIL THUỘC TRUNG TÂM THƯ ĐIỆN TỬ SKY FIRST - MẠNG LƯỚI GIÁO DỤC VÀ PHÁT TRIỂN CỘNG ĐỒNG SKY FIRST',
+        notice:'Chỉ có địa chỉ email có đuôi @skyfirst.io.vn (hoặc các tên miền phụ chính thức) được cấp trong hệ thống Sky First Mail mới là email của Sky First. Nghiêm cấm tất cả hành vi trái phép đuôi ngoài.',
+        fields:null,
+        securityHeadings,
+        support:supportInfo,
+        account:null,
+        domain:domainResult,
+        authenticatedProofline:false,
+        checkedAt:new Date().toISOString()
+      });
+    }
+
+    // Nếu tài khoản tồn tại trong hệ thống Sky First Mail
+    let statusText = 'Chưa được xác minh';
+    let statusCode = 'unverified';
+    if(Number(u.is_verified)===1&&u.verification_status==='verified'){
+      statusText = 'Đã xác minh chính thức';
+      statusCode = 'verified';
+    }else if(u.verification_status==='pending'){
+      statusText = 'Đang chờ xác minh';
+      statusCode = 'pending';
+    }else if(u.verification_status==='needs_info'){
+      statusText = 'Đang cần bổ sung thông tin';
+      statusCode = 'needs_info';
+    }else if(u.verification_status==='suspended'||u.verification_status==='revoked'){
+      statusText = 'Đã tạm dừng hoặc thu hồi';
+      statusCode = u.verification_status;
+    }
+
+    const dossierCode = `SFV-2026-${String(u.id).padStart(4,'0')}-${(await digest(new TextEncoder().encode(u.email+':'+u.id))).slice(0,6).toUpperCase()}`;
+    const identityType = u.account_type==='organization'?'Tổ chức / Đơn vị':u.account_type==='service'?'Dịch vụ hệ thống':'Cá nhân';
+    const lastUpdatedRaw = u.verified_at || u.updated_at || u.created_at || null;
+    const lastUpdated = lastUpdatedRaw ? new Date(lastUpdatedRaw).toLocaleString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh'}) : 'Chưa có dữ liệu';
+
+    const fields = {
+      verifiedEmail: u.email,
+      identityType,
+      managingUnit: 'Trung tâm Thư điện tử Sky First',
+      issuingAuthority: 'Trung tâm Thư điện tử Sky First',
+      lastUpdated,
+      dossierCode
+    };
+
+    const userResult={
+      email:u.email,
+      displayName:u.display_name,
+      isVerified:Number(u.is_verified)===1&&u.verification_status==='verified',
+      verificationStatus:u.verification_status||'unverified',
+      accountType:u.account_type||'personal',
+      badgeColor:u.account_type==='organization'?'gold':u.account_type==='service'?'service':'blue',
+      department:u.department||null,
+      verificationReason:u.verification_reason||null,
+      verifiedAt:u.verified_at||null,
+      issuingAuthority:'Trung tâm Thư điện tử Sky First',
+      dossierCode,
+      verificationUrl:`https://mail.skyfirst.io.vn/verified?address=${encodeURIComponent(u.email)}`
+    };
     
     return json({
       ok:true,
       service:'Sky First Verified',
       query:queryAddr||queryDomain,
+      status:statusText,
+      statusCode,
+      fields,
+      securityHeadings,
+      support:supportInfo,
       account:userResult,
       domain:domainResult,
       authenticatedProofline:true,
@@ -491,7 +564,7 @@ async function routeApi(request,env){
     
     let u=null;
     if(queryAddr){
-      u=await env.DB.prepare(`SELECT id,email,display_name,role,is_verified,verification_status,account_type,department,verification_reason,verified_at,created_at FROM users WHERE lower(email)=lower(?) LIMIT 1`).bind(queryAddr).first();
+      u=await env.DB.prepare(`SELECT id,email,display_name,role,is_verified,verification_status,account_type,department,verification_reason,verified_at,updated_at,created_at FROM users WHERE lower(email)=lower(?) LIMIT 1`).bind(queryAddr).first();
     }
     
     const targetDomain=queryDomain||(queryAddr?queryAddr.split('@')[1]:'skyfirst.io.vn');
@@ -500,56 +573,144 @@ async function routeApi(request,env){
       d=await env.DB.prepare(`SELECT id,domain,status,send_enabled,receive_enabled,external_verification_status,verified_at,last_checked_at FROM managed_domains WHERE lower(domain)=lower(?) LIMIT 1`).bind(targetDomain).first();
     }
     
-    const isVerified=u&&(Number(u.is_verified)===1&&u.verification_status==='verified');
     const hasQuery=!!(queryAddr||queryDomain);
+    let statusText = 'Không tìm thấy hồ sơ';
+    let statusPillClass = 'notfound';
+    let statusIcon = '?';
+    let statusBadgeLabel = 'Chưa xác minh';
     
+    if(hasQuery&&u){
+      if(Number(u.is_verified)===1&&u.verification_status==='verified'){
+        statusText = 'Đã xác minh chính thức';
+        statusIcon = '✓';
+        if(u.account_type==='organization'){
+          statusPillClass = 'gold';
+          statusBadgeLabel = '✓ Đã xác minh chính thức (Tích vàng Tổ chức)';
+        }else if(u.account_type==='service'){
+          statusPillClass = 'service';
+          statusBadgeLabel = '✓ Đã xác minh chính thức (Dịch vụ hệ thống)';
+        }else{
+          statusPillClass = 'ok';
+          statusBadgeLabel = '✓ Đã xác minh chính thức';
+        }
+      }else if(u.verification_status==='pending'){
+        statusText = 'Đang chờ xác minh';
+        statusPillClass = 'pending';
+        statusIcon = '⏳';
+        statusBadgeLabel = 'Đang chờ xác minh';
+      }else if(u.verification_status==='needs_info'){
+        statusText = 'Đang cần bổ sung thông tin';
+        statusPillClass = 'needsinfo';
+        statusIcon = '!';
+        statusBadgeLabel = 'Đang cần bổ sung thông tin';
+      }else if(u.verification_status==='suspended'||u.verification_status==='revoked'){
+        statusText = 'Đã tạm dừng hoặc thu hồi';
+        statusPillClass = 'revoked';
+        statusIcon = '⊘';
+        statusBadgeLabel = 'Đã tạm dừng hoặc thu hồi';
+      }else{
+        statusText = 'Chưa được xác minh';
+        statusPillClass = 'unverified';
+        statusIcon = '?';
+        statusBadgeLabel = 'Chưa được xác minh';
+      }
+    }
+
+    const dossierCode = u ? `SFV-2026-${String(u.id).padStart(4,'0')}-${(await digest(new TextEncoder().encode(u.email+':'+u.id))).slice(0,6).toUpperCase()}` : 'SFV-2026-CHUA-CAP';
+    const identityType = u ? (u.account_type==='organization'?'Tổ chức / Đơn vị':u.account_type==='service'?'Dịch vụ hệ thống':'Cá nhân') : 'Chưa xác định';
+    const lastUpdatedRaw = u?.verified_at || u?.updated_at || u?.created_at || null;
+    const lastUpdated = lastUpdatedRaw ? new Date(lastUpdatedRaw).toLocaleString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh'}) : 'Chưa có dữ liệu';
+
     const html=`<!doctype html>
 <html lang="vi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Sky First Verified — Trung tâm Tra cứu & Xác minh Thương hiệu Quốc tế</title>
+  <title>HỆ THỐNG XÁC MINH DANH TÍNH & NHẬN DIỆN THƯƠNG HIỆU - Sky First Verified</title>
   <link rel="icon" type="image/png" href="/favicon-app.png">
   <style>
-    :root{--blue:#0984e3;--navy:#0a2948;--bg:#f4f9fd;--panel:#fff;--line:#cfe3f5;--text:#12385c;--muted:#577e9f;--ok:#12835f}
+    :root{--blue:#0984e3;--navy:#0a2948;--bg:#f4f9fd;--panel:#fff;--line:#cfe3f5;--text:#12385c;--muted:#577e9f;--ok:#12835f;--warn:#b25e02;--err:#b82020}
     *{box-sizing:border-box}
     body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:linear-gradient(135deg,#eaf5ff 0%,#f5fbff 50%,#e1f2ff 100%);color:var(--text);min-height:100vh;display:flex;flex-direction:column}
-    header{background:rgba(255,255,255,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+    header{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:14px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
     .brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit}
-    .brand img{width:38px;height:38px;object-fit:contain}
-    .brand b{font-size:16px;color:var(--navy);letter-spacing:.02em}
-    .brand span{display:block;font-size:10px;font-weight:900;color:var(--blue);letter-spacing:.12em}
-    main{max-width:960px;margin:36px auto;padding:0 20px;width:100%;flex:1}
-    .hero{text-align:center;margin-bottom:34px}
-    .kicker{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;background:#e1f0fe;border:1px solid #b7dcfa;color:#0b61a4;font-size:11px;font-weight:900;letter-spacing:.1em;margin-bottom:12px}
-    h1{font-size:clamp(26px,4vw,38px);color:var(--navy);margin:0 0 10px;letter-spacing:-.03em}
-    .hero p{font-size:15px;color:var(--muted);max-width:640px;margin:0 auto;line-height:1.6}
-    .search-card{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:22px;box-shadow:0 12px 34px rgba(10,50,90,.06);margin-bottom:28px}
+    .brand img{width:40px;height:40px;object-fit:contain}
+    .brand b{font-size:16px;color:var(--navy);letter-spacing:.02em;display:block}
+    .brand span{display:block;font-size:11px;font-weight:900;color:var(--blue);letter-spacing:.1em}
+    main{max-width:960px;margin:32px auto;padding:0 20px;width:100%;flex:1}
+    .hero{text-align:center;margin-bottom:30px}
+    .kicker{display:inline-flex;align-items:center;gap:6px;padding:4px 14px;border-radius:999px;background:#e1f0fe;border:1px solid #b7dcfa;color:#0b61a4;font-size:12px;font-weight:900;letter-spacing:.08em;margin-bottom:12px}
+    h1{font-size:clamp(22px,3.5vw,32px);color:var(--navy);margin:0 0 12px;letter-spacing:-.02em;line-height:1.3}
+    .hero p{font-size:15px;color:var(--muted);max-width:720px;margin:0 auto;line-height:1.6}
+    .search-card{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:22px;box-shadow:0 10px 30px rgba(10,50,90,.06);margin-bottom:28px}
     .search-form{display:flex;gap:10px;flex-wrap:wrap}
-    .search-form input{flex:1 1 280px;height:48px;border:1.5px solid #bddcf6;border-radius:12px;padding:0 16px;font-size:15px;color:var(--text);outline:none;transition:.2s}
+    .search-form input{flex:1 1 300px;height:48px;border:1.5px solid #bddcf6;border-radius:12px;padding:0 16px;font-size:15px;color:var(--text);outline:none;transition:.2s}
     .search-form input:focus{border-color:var(--blue);box-shadow:0 0 0 4px rgba(9,132,227,.12)}
-    .search-form button{height:48px;padding:0 24px;border:0;border-radius:12px;background:linear-gradient(135deg,#0984e3,#0652dd);color:#fff;font-weight:800;font-size:15px;cursor:pointer}
-    .result-card{background:var(--panel);border:1px solid var(--line);border-radius:24px;padding:32px;box-shadow:0 16px 45px rgba(10,50,90,.08);margin-bottom:28px}
-    .badge-header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding-bottom:22px;border-bottom:1px solid var(--line);margin-bottom:24px}
-    .seal-icon{width:56px;height:56px;border-radius:18px;display:grid;place-items:center;font-size:28px;font-weight:bold;color:#fff;background:linear-gradient(135deg,#0984e3,#0652dd);box-shadow:0 8px 20px rgba(9,132,227,.3)}
-    .seal-icon.unverified{background:#8c9ba5;box-shadow:none}
-    .seal-meta h2{margin:0 0 4px;font-size:22px;color:var(--navy);display:flex;align-items:center;gap:8px}
-    .seal-meta p{margin:0;color:var(--muted);font-size:13px}
-    .cert-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:800}
-    .cert-pill.ok{background:#e8fff2;border:1px solid #b7ebcc;color:#12835f}
-    .cert-pill.warn{background:#fff8e7;border:1px solid #f0d59d;color:#7a5008}
-    .cert-pill.revoked{background:#fff0f0;border:1px solid #ffc6cb;color:#a81e27}
-    .grid-info{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
-    .grid-info>div{background:#f7fbff;border:1px solid #dcebf8;border-radius:14px;padding:14px}
-    .grid-info span{display:block;font-size:11px;font-weight:800;letter-spacing:.04em;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
-    .grid-info b{font-size:14px;color:var(--navy);overflow-wrap:anywhere}
-    .standards-section{background:rgba(255,255,255,.8);border:1px solid var(--line);border-radius:20px;padding:28px;margin-bottom:28px}
-    .standards-section h3{margin:0 0 16px;color:var(--navy);font-size:18px}
-    .std-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
-    .std-card{border:1px solid #dbe9f6;border-radius:14px;padding:14px;background:#fff}
-    .std-card b{display:block;font-size:13px;color:var(--navy);margin-bottom:4px}
-    .std-card p{margin:0;font-size:12px;color:var(--muted);line-height:1.5}
-    footer{background:rgba(255,255,255,.9);border-top:1px solid var(--line);padding:20px;text-align:center;font-size:12px;color:var(--muted)}
+    .search-form button{height:48px;padding:0 26px;border:0;border-radius:12px;background:linear-gradient(135deg,#0984e3,#0652dd);color:#fff;font-weight:800;font-size:15px;cursor:pointer;white-space:nowrap}
+    
+    /* Dedicated Separate Status Area */
+    .status-area{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:24px;box-shadow:0 12px 35px rgba(10,50,90,.07);margin-bottom:24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+    .status-icon{width:64px;height:64px;border-radius:18px;display:grid;place-items:center;font-size:32px;font-weight:900;color:#fff;flex-shrink:0}
+    .status-icon.ok{background:linear-gradient(135deg,#0984e3,#0652dd);box-shadow:0 8px 20px rgba(9,132,227,.3)}
+    .status-icon.gold{background:linear-gradient(135deg,#f59e0b,#d97706);box-shadow:0 8px 20px rgba(217,119,6,.35)}
+    .status-icon.service{background:linear-gradient(135deg,#8b5cf6,#6d28d9);box-shadow:0 8px 20px rgba(109,40,217,.3)}
+    .status-icon.pending{background:linear-gradient(135deg,#e67e22,#d35400);box-shadow:0 8px 20px rgba(230,126,34,.3)}
+    .status-icon.needsinfo{background:linear-gradient(135deg,#f39c12,#e67e22);box-shadow:0 8px 20px rgba(243,156,18,.3)}
+    .status-icon.unverified{background:#8c9ba5}
+    .status-icon.revoked{background:linear-gradient(135deg,#e74c3c,#c0392b)}
+    .status-text h2{margin:0 0 6px;font-size:22px;color:var(--navy);display:flex;align-items:center;gap:10px}
+    .status-badge{display:inline-flex;align-items:center;padding:4px 12px;border-radius:999px;font-size:13px;font-weight:800}
+    .status-badge.ok{background:#e6f8f0;border:1px solid #9ce5c4;color:#0b7a4b}
+    .status-badge.gold{background:#fef7e6;border:1px solid #f9d275;color:#b45309}
+    .status-badge.service{background:#f5f3ff;border:1px solid #c4b5fd;color:#6d28d9}
+    .status-badge.pending{background:#fef5e7;border:1px solid #f9d8a5;color:#b25e02}
+    .status-badge.needsinfo{background:#fff9e6;border:1px solid #fde49a;color:#a06000}
+    .status-badge.unverified{background:#f0f4f8;border:1px solid #d0dce6;color:#576b7a}
+    .status-badge.revoked{background:#fdeeee;border:1px solid #f8c3c3;color:#b82020}
+    .status-text p{margin:0;font-size:14px;color:var(--muted);line-height:1.5}
+    
+    /* Exactly 6 Fields Data Grid */
+    .fields-card{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:26px;box-shadow:0 12px 35px rgba(10,50,90,.07);margin-bottom:28px}
+    .fields-card h3{margin:0 0 16px;font-size:17px;color:var(--navy)}
+    .grid-6{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+    .grid-item{background:#f7fbff;border:1px solid #d8e9f8;border-radius:14px;padding:16px}
+    .grid-item .field-idx{font-size:11px;font-weight:900;color:var(--blue);text-transform:uppercase;margin-bottom:2px}
+    .grid-item label{display:block;font-size:12px;font-weight:800;color:var(--muted);margin-bottom:6px}
+    .grid-item .field-val{font-size:15px;font-weight:700;color:var(--navy);overflow-wrap:anywhere}
+
+    /* Warning Alert Card for External / Non-Existent Emails */
+    .warning-alert-card{background:#fff5f5;border:2px solid #f87171;border-radius:20px;padding:26px;box-shadow:0 12px 35px rgba(220,38,38,.08);margin-bottom:28px;display:flex;gap:20px;align-items:flex-start}
+    .alert-icon{font-size:40px;line-height:1;flex-shrink:0}
+    .alert-content h2{margin:0 0 4px;font-size:19px;color:#991b1b;line-height:1.4}
+    .alert-sub{margin:0 0 14px;font-size:12px;font-weight:900;letter-spacing:.08em;color:#b91c1c;text-transform:uppercase}
+    .alert-details p{margin:0 0 14px;font-size:15px;color:#450a0a;line-height:1.6}
+    .alert-rule-box{background:#fff;border:1px solid #fecaca;border-radius:12px;padding:16px;margin-top:12px}
+    .alert-rule-box b{color:#991b1b;font-size:13px;display:block;margin-bottom:8px}
+    .alert-rule-box ul{margin:0;padding-left:20px;font-size:13px;color:#7f1d1d;line-height:1.7}
+    .alert-rule-box code{background:#fee2e2;padding:2px 6px;border-radius:6px;color:#991b1b;font-weight:700}
+
+    /* Exactly 4 Transparency Headings (ONLY Titles, NO long technical text) */
+    .transparency-section{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:26px;margin-bottom:28px}
+    .transparency-section h3{margin:0 0 16px;font-size:17px;color:var(--navy)}
+    .titles-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+    .title-box{background:#f4f9fd;border:1px solid #cfe3f5;border-radius:12px;padding:16px;display:flex;align-items:center;gap:10px}
+    .title-box span{width:28px;height:28px;border-radius:8px;background:#e1f0fe;color:var(--blue);display:grid;place-items:center;font-weight:900;font-size:13px;flex-shrink:0}
+    .title-box b{font-size:14px;color:var(--navy);font-weight:800}
+
+    /* FAQ Section */
+    .faq-section{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:26px;margin-bottom:28px}
+    .faq-section h3{margin:0 0 16px;font-size:17px;color:var(--navy)}
+    .faq-item{border-bottom:1px solid #e7eff7;padding:14px 0}
+    .faq-item:last-child{border-bottom:none;padding-bottom:0}
+    .faq-q{font-weight:800;font-size:15px;color:var(--navy);margin-bottom:6px;display:flex;align-items:center;gap:8px}
+    .faq-q::before{content:"❓";font-size:14px}
+    .faq-a{font-size:14px;color:#3b5a77;line-height:1.6;margin:0;padding-left:24px}
+
+    /* Footer & Support Contacts */
+    footer{background:rgba(255,255,255,.94);border-top:1px solid var(--line);padding:26px 20px;text-align:center;font-size:13px;color:var(--muted);line-height:1.7}
+    footer b{color:var(--navy)}
+    footer a{color:var(--blue);text-decoration:none;font-weight:700}
+    footer a:hover{text-decoration:underline}
   </style>
 </head>
 <body>
@@ -565,67 +726,146 @@ async function routeApi(request,env){
   </header>
   <main>
     <div class="hero">
-      <span class="kicker">HỆ THỐNG XÁC THỰC THƯƠNG HIỆU & DANH TÍNH</span>
-      <h1>Chứng thư Xác minh Sky First Verified</h1>
-      <p>Cổng tra cứu công khai độc lập, đối soát chứng nhận người gửi, chữ ký mã hóa Proofline và cấu hình nhận diện thương hiệu BIMI/DNS quốc tế thuộc mạng lưới Sky First.</p>
+      <span class="kicker">CỔNG TRA CỨU CÔNG KHAI</span>
+      <h1>HỆ THỐNG XÁC MINH DANH TÍNH & NHẬN DIỆN THƯƠNG HIỆU - Sky First Verified</h1>
+      <p>Cổng tra cứu xác minh công khai của Sky First, hỗ trợ kiểm tra tính hợp lệ của địa chỉ email, mức độ xác thực danh tính và thông tin nhận diện thương hiệu chính thức.</p>
     </div>
+    
     <div class="search-card">
       <form class="search-form" action="/verified" method="GET">
-        <input name="address" value="${queryAddr.replace(/[<>"']/g,'')}" placeholder="Nhập địa chỉ email cần tra cứu (ví dụ: admin@skyfirst.io.vn)..." autocomplete="off" required>
-        <button type="submit">Kiểm tra danh tính</button>
+        <input name="address" value="${queryAddr.replace(/[<>"']/g,'')}" placeholder="Nhập địa chỉ email cần tra cứu (ví dụ: hotro@skyfirst.io.vn)..." autocomplete="off" required>
+        <button type="submit">Tra cứu xác minh</button>
       </form>
     </div>
-    ${hasQuery?`
-    <div class="result-card">
-      <div class="badge-header">
-        <div class="seal-icon ${isVerified?'':'unverified'}">${isVerified?'✓':'?'}</div>
-        <div class="seal-meta">
-          <h2>${u?u.display_name.replace(/[<>"']/g,''):queryAddr.replace(/[<>"']/g,'')} ${isVerified?'<span class="cert-pill ok">✓ Đã xác minh chính thức</span>':u?.verification_status==='revoked'?'<span class="cert-pill revoked">Đã thu hồi</span>':u?.verification_status==='suspended'?'<span class="cert-pill warn">Tạm đình chỉ</span>':'<span class="cert-pill warn">Chưa cấp tích xanh</span>'}</h2>
-          <p>Tài khoản thuộc hệ thống Sky First Mail (mail.skyfirst.io.vn) · Tên miền thương hiệu: <b>${targetDomain.replace(/[<>"']/g,'')}</b></p>
+
+    ${hasQuery?(u?`
+    <!-- Khu vực trạng thái riêng biệt (KHÔNG nằm chung trong 6 trường) -->
+    <div class="status-area">
+      <div class="status-icon ${statusPillClass}">${statusIcon}</div>
+      <div class="status-text">
+        <h2>${u.display_name.replace(/[<>"']/g,'')} <span class="status-badge ${statusPillClass}">${statusBadgeLabel}</span></h2>
+        <p>Hồ sơ thuộc hệ thống Sky First Mail (mail.skyfirst.io.vn) · Tên miền thương hiệu: <b>${targetDomain.replace(/[<>"']/g,'')}</b></p>
+      </div>
+    </div>
+
+    <!-- Đúng 6 trường thông tin -->
+    <div class="fields-card">
+      <h3>Thông tin Hồ sơ Xác minh (6 Trường Dữ liệu)</h3>
+      <div class="grid-6">
+        <div class="grid-item">
+          <div class="field-idx">Trường 1</div>
+          <label>Email xác minh</label>
+          <div class="field-val">${u.email}</div>
+        </div>
+        <div class="grid-item">
+          <div class="field-idx">Trường 2</div>
+          <label>Loại định danh</label>
+          <div class="field-val">${identityType}</div>
+        </div>
+        <div class="grid-item">
+          <div class="field-idx">Trường 3</div>
+          <label>Đơn vị quản lý</label>
+          <div class="field-val">Trung tâm Thư điện tử Sky First</div>
+        </div>
+        <div class="grid-item">
+          <div class="field-idx">Trường 4</div>
+          <label>Đơn vị cấp xác minh</label>
+          <div class="field-val">Trung tâm Thư điện tử Sky First</div>
+        </div>
+        <div class="grid-item">
+          <div class="field-idx">Trường 5</div>
+          <label>Lần cập nhật gần nhất</label>
+          <div class="field-val">${lastUpdated}</div>
+        </div>
+        <div class="grid-item">
+          <div class="field-idx">Trường 6</div>
+          <label>Mã hồ sơ xác minh</label>
+          <div class="field-val" style="font-family:monospace;letter-spacing:0.05em">${dossierCode}</div>
         </div>
       </div>
-      <div class="grid-info">
-        <div><span>Địa chỉ email</span><b>${queryAddr||targetDomain}</b></div>
-        <div><span>Phân loại tài khoản</span><b>${u?.account_type==='organization'?'Tổ chức / Đơn vị':u?.account_type==='service'?'Dịch vụ hệ thống':u?.account_type==='delegated'?'Danh tính ủy quyền':'Cá nhân'}</b></div>
-        <div><span>Đơn vị phụ trách</span><b>${(u?.department||'Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First').replace(/[<>"']/g,'')}</b></div>
-        <div><span>Trạng thái tên miền</span><b>${d?.status==='verified'?'Đã xác minh quyền sở hữu DNS':d?.status==='disabled'?'Tên miền bị tạm khóa':'Chờ xác minh TXT'}</b></div>
-        <div><span>Thẩm quyền chứng thực</span><b>Trung tâm Thư điện tử Sky First</b></div>
-        <div><span>Thời điểm kiểm tra</span><b>${new Date().toLocaleString('vi-VN')}</b></div>
+      ${u.verification_reason?`<p style="margin-top:16px;font-size:13px;color:#246a9a;background:#eef7ff;padding:12px;border-radius:10px;border:1px solid #c9e4fb"><b>Ghi chú xác minh:</b> ${u.verification_reason.replace(/[<>"']/g,'')}</p>`:''}
+    </div>`:`
+    <!-- Cảnh báo khi KHÔNG phát hiện email thuộc Trung tâm Thư điện tử Sky First -->
+    <div class="warning-alert-card">
+      <div class="alert-icon">⚠️</div>
+      <div class="alert-content">
+        <h2>CẢNH BÁO: CHÚNG TÔI KHÔNG PHÁT HIỆN EMAIL THUỘC TRUNG TÂM THƯ ĐIỆN TỬ SKY FIRST</h2>
+        <div class="alert-sub">MẠNG LƯỚI GIÁO DỤC VÀ PHÁT TRIỂN CỘNG ĐỒNG SKY FIRST</div>
+        <div class="alert-details">
+          <p>Địa chỉ <b>${queryAddr.replace(/[<>"']/g,'')}</b> <u>không tồn tại</u> hoặc <u>không thuộc quyền quản lý</u> của hệ thống Sky First Mail.</p>
+          <div class="alert-rule-box">
+            <b>Quy định bảo vệ nhận diện thương hiệu bắt buộc:</b>
+            <ul>
+              <li><strong>Chỉ có các địa chỉ email có đuôi @skyfirst.io.vn</strong> (hoặc các tên miền phụ chính thức được ủy quyền) được cấp và vận hành trực tiếp trong hệ thống <strong>Sky First Mail (mail.skyfirst.io.vn)</strong> mới là email của Sky First.</li>
+              <li>Nghiêm cấm và ngăn chặn tất cả hành vi mạo danh, sử dụng tên miền ngoài hoặc tự nhận danh tính thuộc Trung tâm Thư điện tử Sky First.</li>
+              <li>Hệ thống từ chối trả về hồ sơ xác minh cho các địa chỉ không thuộc phạm vi quản lý của Sky First Network.</li>
+            </ul>
+          </div>
+        </div>
       </div>
-      ${u?.verification_reason?`<p style="margin-top:18px;font-size:13px;color:#246a9a;background:#eef7ff;padding:12px;border-radius:10px;border:1px solid #c9e4fb"><b>Lý do xác minh:</b> ${u.verification_reason.replace(/[<>"']/g,'')}</p>`:''}
-    </div>`:''}
-    <div class="standards-section">
-      <h3>Tiêu chuẩn Xác minh & Công bố Thương hiệu Quốc tế</h3>
-      <div class="std-grid">
-        <div class="std-card">
-          <b>1. Google Gmail (Blue Checkmark)</b>
-          <p>Google yêu cầu chuẩn BIMI với logo SVG Tiny PS và chứng thư số VMC/CMC để hiển thị dấu tích xanh cạnh tên Sky First trong hộp thư Gmail.</p>
+    </div>`):''}
+
+    <!-- 4 tiêu đề minh bạch và an toàn (CHỈ TIÊU ĐỀ, KHÔNG GIẢI THÍCH DÀI DÒNG KỸ THUẬT) -->
+    <div class="transparency-section">
+      <h3>Tiêu chuẩn Minh bạch & An toàn Thương hiệu</h3>
+      <div class="titles-grid">
+        <div class="title-box">
+          <span>1</span>
+          <b>Minh bạch xác minh danh tính</b>
         </div>
-        <div class="std-card">
-          <b>2. Apple Mail & Yahoo Mail</b>
-          <p>Hỗ trợ hiển thị logo BIMI chính thức tại <code>default._bimi.${targetDomain}</code> khi DMARC đạt <code>p=quarantine/reject</code>.</p>
+        <div class="title-box">
+          <span>2</span>
+          <b>An toàn và bảo vệ thương hiệu</b>
         </div>
-        <div class="std-card">
-          <b>3. Chữ ký số Sky Proofline</b>
-          <p>Mỗi email được băm mã hóa SHA-256 bảo toàn tính toàn vẹn nội dung, chống giả mạo danh tính trên đường truyền mạng.</p>
+        <div class="title-box">
+          <span>3</span>
+          <b>Toàn vẹn dữ liệu email</b>
         </div>
-        <div class="std-card">
-          <b>4. Bản ghi Xác thực SPF & DKIM</b>
-          <p>Ký số 2048-bit định danh máy chủ gửi hợp pháp thuộc quyền kiểm soát của tổ chức Sky First.</p>
+        <div class="title-box">
+          <span>4</span>
+          <b>Xác thực và bảo mật hệ thống</b>
         </div>
+      </div>
+    </div>
+
+    <!-- Bộ giải đáp thắc mắc người dùng (FAQ) -->
+    <div class="faq-section">
+      <h3>Bộ giải đáp thắc mắc người dùng</h3>
+      <div class="faq-item">
+        <div class="faq-q">Tôi chưa thấy tích xanh</div>
+        <p class="faq-a">Để được cấp tích xanh nội bộ Sky First, tài khoản cần hoàn tất thủ tục xác thực danh tính với Quản trị viên. Để hiển thị tích xanh bên ngoài (Gmail, Apple Mail), tên miền bắt buộc phải thiết lập DMARC ở mức nghiêm ngặt (quarantine/reject pct=100) và sở hữu chứng thư xác thực thương hiệu quốc tế VMC/CMC.</p>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Tôi chưa thấy tích vàng</div>
+        <p class="faq-a">Tích vàng được cấp cho các tổ chức, doanh nghiệp và cơ quan đối tác chính thức thuộc mạng lưới Sky First sau khi đã thẩm định hồ sơ pháp lý và tên miền riêng.</p>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Tôi chưa thấy tích tím</div>
+        <p class="faq-a">Tích tím áp dụng cho các tài khoản dịch vụ hệ thống, thông báo tự động (noreply, notification) được chứng thực nguồn gốc bởi Sky First Network.</p>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Email của tôi chưa có huy hiệu / chưa hiện dấu xác minh</div>
+        <p class="faq-a">Vui lòng đăng nhập vào tài khoản và kiểm tra trạng thái tại mục Cài đặt hoặc liên hệ trực tiếp Quản trị viên hệ thống qua email hỗ trợ để nộp hồ sơ thẩm định.</p>
+      </div>
+      <div class="faq-item">
+        <div class="faq-q">Tại sao người nhận chưa thấy logo của tôi?</div>
+        <p class="faq-a">Các ứng dụng nhận thư bên ngoài (Gmail, Outlook, Yahoo) lưu bộ đệm DNS độc lập (có thể mất từ 24 - 48 giờ) và chỉ hiển thị logo nếu tên miền đạt đầy đủ các bản ghi SPF, DKIM, DMARC và hồ sơ BIMI hợp chuẩn quốc tế.</p>
       </div>
     </div>
   </main>
+  
+  <!-- Thông tin liên hệ hỗ trợ chính thức -->
   <footer>
-    <b>© 2026 Trung tâm Thư điện tử Sky First (mail.skyfirst.io.vn)</b><br>
-    Sản phẩm thuộc Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First · Hotline/Zalo: 0924 910 210
+    <b>Trung tâm Thư điện tử Sky First - Mạng lưới Giáo dục & Phát triển Cộng đồng Sky First</b><br>
+    Hệ thống thư điện tử và quản lý danh tính thương hiệu: <a href="https://mail.skyfirst.io.vn">mail.skyfirst.io.vn</a><br>
+    Email hỗ trợ chính thức: <a href="mailto:support@skyfirst.io.vn">support@skyfirst.io.vn</a> &middot; <a href="mailto:lienhe@skyfirst.io.vn">lienhe@skyfirst.io.vn</a><br>
+    Hotline / Zalo: 0924 910 210 &middot; © 2026 Sky First Network. All rights reserved.
   </footer>
 </body>
 </html>`;
     return new Response(html,{status:200,headers:{'content-type':'text/html; charset=utf-8','cache-control':'public, max-age=300'}});
   }
 
-  
   const user=await currentUser(request,env); if(!user)return unauthorized();
 
   if(path==='/api/me'&&request.method==='GET'){
@@ -1333,9 +1573,27 @@ async function routeApi(request,env){
         env.DB.prepare(`INSERT INTO verification_history(user_id,actor_user_id,action,previous_status,new_status,account_type,department,reason) VALUES(?,?,?,?,?,?,?,?)`)
           .bind(id,user.id,action,target.verification_status||'unverified',newStatus,accountType,department,reason)
       ]);
-      try{await notify(env,id,isVerified?'Tài khoản đã được cấp tích xanh xác minh':'Cập nhật trạng thái tích xanh xác minh',`Trạng thái: ${newStatus} · Lý do: ${reason}`,'verification')}catch{}
-      await audit(env,user.id,`admin.verification.${action}`,'user',id,{email:target.email,previousStatus:target.verification_status,newStatus,accountType,department,reason});
-      return json({ok:true,id,isVerified:!!isVerified,verificationStatus:newStatus,accountType,department,reason});
+      const dossierCode = `SFV-2026-${String(id).padStart(4,'0')}-${(await digest(new TextEncoder().encode(target.email+':'+id))).slice(0,6).toUpperCase()}`;
+      try{await notify(env,id,isVerified?'Tài khoản đã được cấp tích xanh xác minh':'Cập nhật trạng thái tích xanh xác minh',`Trạng thái: ${newStatus} · Mã hồ sơ: ${dossierCode} · Lý do: ${reason}`,'verification')}catch{}
+      
+      // Automated official transactional email notification sent to user inbox
+      try{
+        const mb = await env.DB.prepare(`SELECT id, address FROM mailboxes WHERE user_id=? AND is_active=1 LIMIT 1`).bind(id).first();
+        if(mb && env.MAIL_STORAGE){
+          const statusVn = action === 'grant' ? 'Đã xác minh chính thức' : action === 'suspend' ? 'Tạm dừng xác minh' : 'Đã thu hồi xác minh';
+          const notifSubject = `[Sky First Verified] Thông báo trạng thái xác minh danh tính - ${dossierCode}`;
+          const notifBody = `Kính gửi Quý người dùng / Đơn vị,\n\nTrung tâm Thư điện tử Sky First xin thông báo kết quả cập nhật trạng thái xác minh cho địa chỉ email: ${target.email}\n- Trạng thái xác thực: ${statusVn}\n- Mã hồ sơ xác minh: ${dossierCode}\n- Thời điểm thực hiện: ${new Date().toLocaleString('vi-VN')}\n- Lý do / Ghi chú: ${reason}\n\nQuý vị có thể tra cứu trực tiếp tại Cổng tra cứu xác minh công khai: https://mail.skyfirst.io.vn/verified?address=${encodeURIComponent(target.email)}\nMọi thắc mắc vui lòng liên hệ: support@skyfirst.io.vn hoặc lienhe@skyfirst.io.vn.\n\nTrân trọng,\nTrung tâm Thư điện tử Sky First`;
+          const rawEml = new TextEncoder().encode(`From: "Trung tâm Thư điện tử Sky First" <support@skyfirst.io.vn>\r\nTo: <${target.email}>\r\nSubject: ${notifSubject}\r\nDate: ${new Date().toUTCString()}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${notifBody}`);
+          const storageKey = `messages/notifications/${mb.id}/${Date.now()}-${crypto.randomUUID()}.eml`;
+          await env.MAIL_STORAGE.put(storageKey, rawEml, { httpMetadata: { contentType: 'message/rfc822' } });
+          const contentSha256 = await digest(rawEml);
+          await env.DB.prepare(`INSERT INTO messages(mailbox_id,direction,folder,message_id_header,sender,recipients_json,subject,preview,storage_key,raw_size,content_sha256,hash_recorded_at,is_read,status,sent_at,received_at) VALUES(?, 'inbound', 'inbox', ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, 0, 'received', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+            .bind(mb.id, `<${dossierCode}@mail.skyfirst.io.vn>`, 'Trung tâm Thư điện tử Sky First <support@skyfirst.io.vn>', JSON.stringify([target.email]), notifSubject, `Trạng thái: ${statusVn} · Mã hồ sơ: ${dossierCode}`, storageKey, rawEml.byteLength, contentSha256).run();
+        }
+      }catch(e){console.warn('NOTIFY_EMAIL_FAILED', e?.message||e);}
+
+      await audit(env,user.id,`admin.verification.${action}`,'user',id,{email:target.email,previousStatus:target.verification_status,newStatus,accountType,department,reason,dossierCode});
+      return json({ok:true,id,isVerified:!!isVerified,verificationStatus:newStatus,accountType,department,reason,dossierCode});
     }
 
     // Send-As Delegation Management (Phần VIII.2)
