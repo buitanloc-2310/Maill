@@ -382,3 +382,66 @@ button:disabled{cursor:wait}.modal-wrap{overscroll-behavior:contain}.modal{max-h
 .admin-panel-card{background:rgba(255,255,255,.88);border:1px solid #d3e6f7;border-radius:16px;padding:18px}
 .admin-panel-card h3{margin:0 0 10px;color:#0e3a66}
 .recall-outcome-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid #d5e8f8;border-radius:10px;margin-bottom:8px;background:#fff}
+
+/* ===== Sky First Mail V13.1 — Responsive Layout & Enterprise Admin UI ===== */
+html[data-layout-width="narrow"] .admin-content{width:min(1120px,100%)}
+html[data-layout-width="standard"] .admin-content{width:min(1480px,100%)}
+html[data-layout-width="wide"] .admin-content{width:min(97vw,2200px)}
+
+html[data-layout-width="narrow"] .workspace{grid-template-columns:220px 340px minmax(0,1fr)}
+html[data-layout-width="standard"] .workspace{grid-template-columns:252px 430px minmax(0,1fr)}
+html[data-layout-width="wide"] .workspace{grid-template-columns:280px 500px minmax(0,1fr)}
+
+/* Collapsible Sidebar Support */
+html[data-sidebar="collapsed"] .workspace{grid-template-columns:76px 430px minmax(0,1fr)}
+html[data-layout-width="narrow"][data-sidebar="collapsed"] .workspace{grid-template-columns:76px 340px minmax(0,1fr)}
+html[data-layout-width="wide"][data-sidebar="collapsed"] .workspace{grid-template-columns:76px 500px minmax(0,1fr)}
+
+html[data-sidebar="collapsed"] .workspace>aside{padding:16px 8px;align-items:center}
+html[data-sidebar="collapsed"] .workspace>aside .compose{width:48px;height:48px;min-height:48px;padding:0;display:grid;place-items:center;border-radius:14px;font-size:20px}
+html[data-sidebar="collapsed"] .workspace>aside .compose span,
+html[data-sidebar="collapsed"] .workspace>aside .navbtn span,
+html[data-sidebar="collapsed"] .workspace>aside .account-mini>div,
+html[data-sidebar="collapsed"] .workspace>aside .v3-section-label,
+html[data-sidebar="collapsed"] .workspace>aside .aside-system,
+html[data-sidebar="collapsed"] .workspace>aside .v4-footer{display:none}
+
+html[data-sidebar="collapsed"] .workspace>aside .navbtn{justify-content:center;padding:10px;width:48px;height:42px;min-height:42px}
+html[data-sidebar="collapsed"] .workspace>aside .navbtn i{margin:0;font-size:16px}
+html[data-sidebar="collapsed"] .workspace>aside .account-mini{justify-content:center;padding:6px;width:48px}
+html[data-sidebar="collapsed"] .workspace>aside .aside-sep{width:40px;margin:8px auto}
+
+/* Layout switcher controls */
+.layout-switcher{display:inline-flex;align-items:center;background:rgba(214,239,255,.7);border:1px solid #b8ddf7;border-radius:12px;padding:3px;gap:3px}
+.layout-btn{border:0;background:transparent;color:#246a9a;padding:5px 9px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;line-height:1}
+.layout-btn:hover{background:rgba(255,255,255,.6);color:#0a4575}
+.layout-btn.active{background:#fff;color:#087ff5;box-shadow:0 2px 6px rgba(8,127,245,.15);font-weight:900}
+.sidebar-toggle-btn{border:1px solid rgba(71,164,226,.35);background:rgba(255,255,255,.6);border-radius:12px;padding:7px 11px;cursor:pointer;color:#0f4f82;font-size:16px;display:inline-flex;align-items:center;justify-content:center;line-height:1}
+.sidebar-toggle-btn:hover{background:#fff;color:#087ff5}
+
+/* Fix Admin Row Collapse & Deformation (Verifications, Delegations, Aliases) */
+.admin-workspace .ver-row,
+.admin-workspace .delegation-row,
+.admin-workspace .alias-row{display:flex!important;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:14px 18px!important}
+.admin-workspace .ver-row .ver-identity-group{display:flex;align-items:center;gap:14px;flex:1 1 340px;min-width:0}
+.admin-workspace .ver-row .mini-avatar{flex:0 0 42px;width:42px;height:42px;border-radius:13px}
+.admin-workspace .ver-row .account-identity{flex:1 1 auto;min-width:0}
+.admin-workspace .ver-row .account-identity b{font-size:14px;color:#123d66;display:flex;align-items:center;gap:6px;flex-wrap:wrap;line-height:1.4}
+.admin-workspace .ver-row .account-identity span{display:block;margin-top:4px;font-size:12px;color:#557799;overflow-wrap:anywhere;line-height:1.5}
+.admin-workspace .ver-row .ver-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto;margin-left:auto}
+.admin-workspace .ver-row .ver-actions button{flex:0 0 auto;width:auto;white-space:nowrap;padding:9px 15px}
+.admin-workspace .delegation-row .account-identity,
+.admin-workspace .alias-row .account-identity{flex:1 1 320px;min-width:0}
+.admin-workspace .delegation-row button,
+.admin-workspace .alias-row button{flex:0 0 auto;width:auto;white-space:nowrap}
+
+@media(max-width:650px){
+  .admin-workspace .ver-row,
+  .admin-workspace .delegation-row,
+  .admin-workspace .alias-row{flex-direction:column;align-items:stretch;gap:12px;padding:12px!important}
+  .admin-workspace .ver-row .ver-identity-group{width:100%}
+  .admin-workspace .ver-row .ver-actions{width:100%;margin-left:0;justify-content:stretch}
+  .admin-workspace .ver-row .ver-actions button,
+  .admin-workspace .delegation-row button,
+  .admin-workspace .alias-row button{flex:1 1 auto;text-align:center}
+}

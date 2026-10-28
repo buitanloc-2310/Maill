@@ -104,6 +104,7 @@ export async function reliableCompose(request,env,user,services){
   const effectiveDisplayName=fromMb.sender_kind==='delegated'?(fromMb.display_name||fromMb.sender_address):(user.display_name||fromMb.display_name);
   if(hasExternal){
    const headers={};if(inReplyTo){headers['In-Reply-To']=inReplyTo;headers.References=references.join(' ');}if(priority==='high')headers['X-Priority']='1';if(listUnsubscribe){headers['List-Unsubscribe']=`<${listUnsubscribe}>`;headers['List-Unsubscribe-Post']='List-Unsubscribe=One-Click';}
+   if(user.is_verified&&user.verification_status==='verified'){headers['X-SkyFirst-Verified']='true';headers['X-SkyFirst-Verification-Status']='verified';headers['X-SkyFirst-Verification-Type']=user.account_type||'personal';if(user.department)headers['X-SkyFirst-Department']=user.department;headers['BIMI-Selector']='v=BIMI1; s=default';}
    await env.DB.prepare("UPDATE send_operations SET status='sending',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(id).run();
    providerStarted=true;
    const result=await services.sendWithResend(env,{fromAddress:fromMb.sender_address,fromName:effectiveDisplayName,to:external('to'),cc:external('cc'),bcc:external('bcc'),subject,html,text,attachments,inlineAttachments,inlineCidMap,headers,replyTo,idempotencyKey:id});providerId=result.id;providerName=result.provider||'external';

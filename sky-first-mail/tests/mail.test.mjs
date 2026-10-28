@@ -174,6 +174,24 @@ test('mail API and persisted delivery',async t=>{
   assert.equal(db.sql.prepare('SELECT count(*) n FROM send_operations WHERE user_id=2').get().n,0);
   assert.equal(db.sql.prepare('SELECT count(*) n FROM messages WHERE mailbox_id IS NULL').get().n,0,'account deletion must not leave orphaned message rows');
  });
+ await t.test('Sky First Verified public portal and API independently verify sender and domain status',async()=>{
+  const pubApi=await request('/api/public/verified?address=admin@skyfirst.io.vn');
+  assert.equal(pubApi.r.status,200);
+  assert.equal(pubApi.data.ok,true);
+  assert.equal(pubApi.data.service,'Sky First Verified');
+  assert.equal(pubApi.data.account.isVerified,true);
+  assert.equal(pubApi.data.account.verificationStatus,'verified');
+  assert.equal(pubApi.data.domain.domain,'skyfirst.io.vn');
+  assert.match(pubApi.data.domain.bimiRecord,/v=BIMI1/);
+
+  const pubHtml=await app.fetch(new Request('https://mail.skyfirst.io.vn/verified?address=admin@skyfirst.io.vn'),env,{waitUntil:()=>null});
+  assert.equal(pubHtml.status,200);
+  const htmlText=await pubHtml.text();
+  assert.match(htmlText,/Sky First Verified/);
+  assert.match(htmlText,/Đã xác minh chính thức/);
+  assert.match(htmlText,/skyfirst\.io\.vn/);
+ });
+
  await t.test('expired session on current day rejected',async()=>{db.sql.exec("UPDATE sessions SET expires_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute')");assert.equal((await request('/api/me')).r.status,401)});
  }finally{globalThis.fetch=originalFetch;}
 });
