@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, readdirSync, existsSync} from 'node:fs';
-import {join} from 'node:path';
 import { isAllowedAvatarImage, safeAttachmentResponse, safeMimeType, safeMimeFilename, isDangerousAttachmentName } from '../src/lib/content-policy.js';
 import { boundedRequest, RELIABILITY_STATEMENTS, readStreamBounded } from '../src/lib/security.js';
 import { database, DatabaseSync } from './db.mjs';
 import { sendGateway, sendExternal } from '../src/lib/transport.js';
 import { sanitizeDisplayName, hasSpoofedBadgeInName, assessContentAndRecipientRisk, inspectDomainBimiAndDns } from '../src/lib/governance.js';
+import app from '../src/index.js';
 
 const read = (p) => readFileSync(new URL(p, import.meta.url), 'utf8');
 const root = new URL('../', import.meta.url);
@@ -77,7 +77,7 @@ test('requested compose library ships five HTML documents and ten snippets inlin
   }
 });
 
-test('PWA manifest icons, BIMI SVG Tiny PS logo, and static-only service worker exist', () => {
+test('PWA manifest icons, BIMI SVG Tiny PS logo, and static-only service worker exist with bumped cache version', () => {
   const manifest = JSON.parse(read('../public/manifest.webmanifest'));
   for (const icon of manifest.icons) assert.ok(existsSync(atRoot(icon.src.replace(/^\//, 'public/'))), `missing ${icon.src}`);
   assert.ok(existsSync(atRoot('public/bimi-logo.svg')), 'missing BIMI SVG logo');
@@ -87,8 +87,8 @@ test('PWA manifest icons, BIMI SVG Tiny PS logo, and static-only service worker 
   const sw = read('../public/sw.js');
   assert.match(sw, /pathname\.startsWith\('\/api\/'\)/);
   assert.match(sw, /cache: 'no-store'/);
-  assert.match(sw, /sky-first-mail-static-v3-startupfix/);
-  assert.match(read('../public/index.html'), /app\.js\?v=12\.0\.5/);
+  assert.match(sw, /sky-first-mail-static-v13\.0\.1/);
+  assert.match(read('../public/index.html'), /app\.js\?v=13\.0\.1/);
 });
 
 test('attachment policy is consistent across composer and API (100 files, 12 MiB aggregate)', () => {
@@ -172,9 +172,9 @@ test('bootstrap and admin endpoints enforce server-side security controls', () =
 
 test('web entry document points to existing local assets only', () => {
   const html = read('../public/index.html');
-  assert.match(html, /href="\/styles\.css"/);
+  assert.match(html, /href="\/styles\.css(?:\?[^"]*)?"/);
   assert.match(html, /src="\/app\.js(?:\?[^"]*)?"/);
-  assert.match(html, /src="\/v5\.js"/);
+  assert.match(html, /src="\/v5\.js(?:\?[^"]*)?"/);
   for (const file of ['styles.css','app.js','v5.js','sw.js','manifest.webmanifest','sky-first-logo.png','favicon-app.png','app-icon-192.png','bimi-logo.svg']) {
     assert.ok(existsSync(atRoot(`public/${file}`)), `missing referenced static asset: ${file}`);
   }
@@ -234,17 +234,22 @@ test('folded address headers preserve commas between all recipients and buildMim
   assert.equal((toBlock.match(/,/g)||[]).length, recipients.length-1);
 });
 
-test('runtime schema bootstrap prepares a clean database and later isolates use the durable marker', async () => {
+test('runtime schema bootstrap uses D1-safe prepared statements, upgrades legacy 12.0.5 databases, and memoizes version 13.0.1', async () => {
   const source = read('../src/index.js');
-  const start = source.indexOf("const SCHEMA_BOOTSTRAP_VERSION='12.0.5';");
+  assert.doesNotMatch(source, /env\.DB\.exec\(/, 'ensureSchema and ensureColumns must not use multi-line env.DB.exec() on Cloudflare D1');
+  const start = source.indexOf("const SCHEMA_BOOTSTRAP_VERSION='13.0.1';");
   const end = source.indexOf('\nasync function audit(', start);
   assert.ok(start >= 0 && end > start, 'schema bootstrap source should be independently testable');
   const declaration = source.slice(start, end);
   const createBootstrap = () => new Function('RELIABILITY_STATEMENTS', `${declaration}; return ensureSchema;`)(RELIABILITY_STATEMENTS);
   const raw = database();
+  // Simulate an existing production database stuck at runtime_schema_version = "12.0.5"
+  for (const f of ['0001_base.sql','0002_accounts.sql','0003_workspace.sql','0004_v4_productivity.sql','0005_v5_mail_studio.sql','0006_multidomain.sql','0007_reliability.sql','0008_transport_domains.sql']) {
+    raw.sql.exec(readFileSync(atRoot(`migrations/${f}`), 'utf8'));
+  }
+  raw.sql.exec(`INSERT OR REPLACE INTO settings(key, value_json) VALUES('runtime_schema_version', '"12.0.5"')`);
   let tablePragmaCount = 0;
   const DB = {
-    exec: raw.exec,
     batch: raw.batch,
     prepare(sql) {
       if (/^\s*PRAGMA table_info/i.test(sql)) tablePragmaCount++;
@@ -252,12 +257,17 @@ test('runtime schema bootstrap prepares a clean database and later isolates use 
     }
   };
   await createBootstrap()({ DB });
-  assert.equal(tablePragmaCount, 5, 'runtime compatibility checks should perform one PRAGMA per affected table');
+  assert.equal(tablePragmaCount, 6, 'runtime compatibility checks should perform one PRAGMA per affected table (including user_preferences)');
   const marker = await DB.prepare("SELECT value_json FROM settings WHERE key='runtime_schema_version'").first();
-  assert.equal(marker.value_json, '"12.0.5"');
+  assert.equal(marker.value_json, '"13.0.1"');
+  // Verify upgraded columns exist on users and messages
+  const userCols = (await DB.prepare('PRAGMA table_info(users)').all()).results.map(c => c.name);
+  assert.ok(userCols.includes('is_verified') && userCols.includes('expires_at'));
+  const msgCols = (await DB.prepare('PRAGMA table_info(messages)').all()).results.map(c => c.name);
+  assert.ok(msgCols.includes('recalled_at') && msgCols.includes('inbound_auth_json'));
   const countAfterAssertions = tablePragmaCount;
   await createBootstrap()({ DB });
-  assert.equal(tablePragmaCount, countAfterAssertions);
+  assert.equal(tablePragmaCount, countAfterAssertions, 'subsequent isolates skip PRAGMA scans once at 13.0.1');
 });
 
 test('all 9 D1 migrations execute in order and create the complete 29-table schema', () => {

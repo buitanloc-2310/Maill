@@ -26,7 +26,53 @@ function normalizeMessageDate(value){
 }
 const validEmail=v=>String(v||'').length<=254&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v||'');
 const boolInt=v=>v?1:0;
-const SCHEMA_BOOTSTRAP_VERSION='12.0.5';
+const SCHEMA_BOOTSTRAP_VERSION='13.0.1';
+const BASE_SCHEMA_STATEMENTS=[
+  "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE COLLATE NOCASE,display_name TEXT NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,password_iterations INTEGER NOT NULL DEFAULT 100000,role TEXT NOT NULL DEFAULT 'user',status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+  "CREATE TABLE IF NOT EXISTS mailboxes (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,address TEXT NOT NULL UNIQUE COLLATE NOCASE,display_name TEXT,is_primary INTEGER NOT NULL DEFAULT 1,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER,direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),folder TEXT NOT NULL DEFAULT 'inbox',message_id_header TEXT,thread_key TEXT,sender TEXT NOT NULL,recipients_json TEXT NOT NULL,cc_json TEXT,bcc_json TEXT,subject TEXT,preview TEXT,storage_key TEXT NOT NULL,raw_size INTEGER NOT NULL DEFAULT 0,is_read INTEGER NOT NULL DEFAULT 0,is_starred INTEGER NOT NULL DEFAULT 0,is_important INTEGER NOT NULL DEFAULT 0,snoozed_until TEXT,content_sha256 TEXT,hash_recorded_at TEXT,status TEXT NOT NULL DEFAULT 'received',sent_at TEXT,received_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE SET NULL)",
+  "CREATE TABLE IF NOT EXISTS attachments (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL,filename TEXT NOT NULL,content_type TEXT,size INTEGER NOT NULL DEFAULT 0,storage_key TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY,value_json TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+  "CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,action TEXT NOT NULL,target_type TEXT,target_id TEXT,metadata_json TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL)",
+  "CREATE TABLE IF NOT EXISTS login_history (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,ip TEXT,user_agent TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS aliases (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER NOT NULL,address TEXT NOT NULL UNIQUE COLLATE NOCASE,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER PRIMARY KEY,theme TEXT NOT NULL DEFAULT 'system',density TEXT NOT NULL DEFAULT 'comfortable',reading_pane TEXT NOT NULL DEFAULT 'right',undo_send_seconds INTEGER NOT NULL DEFAULT 10,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS contacts (id INTEGER PRIMARY KEY AUTOINCREMENT,owner_user_id INTEGER NOT NULL,email TEXT NOT NULL COLLATE NOCASE,display_name TEXT,notes TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(owner_user_id,email),FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS signatures (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER,name TEXT NOT NULL,content_html TEXT NOT NULL DEFAULT '',is_default INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS labels (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,name),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS message_labels (message_id INTEGER NOT NULL,label_id INTEGER NOT NULL,PRIMARY KEY(message_id,label_id),FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,FOREIGN KEY(label_id) REFERENCES labels(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS mail_rules (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER,name TEXT NOT NULL,sender_contains TEXT,subject_contains TEXT,action_folder TEXT,action_star INTEGER NOT NULL DEFAULT 0,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,type TEXT NOT NULL DEFAULT 'system',title TEXT NOT NULL,body TEXT,is_read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS compose_drafts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER NOT NULL,to_json TEXT NOT NULL DEFAULT '[]',cc_json TEXT NOT NULL DEFAULT '[]',subject TEXT,body_text TEXT,storage_key TEXT,attachment_names_json TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS managed_domains (id INTEGER PRIMARY KEY AUTOINCREMENT,domain TEXT NOT NULL UNIQUE COLLATE NOCASE,status TEXT NOT NULL DEFAULT 'configured',receive_enabled INTEGER NOT NULL DEFAULT 1,send_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+  "CREATE TABLE IF NOT EXISTS mail_templates (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,subject TEXT NOT NULL DEFAULT '',body_html TEXT NOT NULL DEFAULT '',body_text TEXT NOT NULL DEFAULT '',category TEXT NOT NULL DEFAULT 'personal',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS delivery_events (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER,provider TEXT NOT NULL DEFAULT 'resend',provider_message_id TEXT,event_type TEXT NOT NULL,detail_json TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS verification_history (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,actor_user_id INTEGER,action TEXT NOT NULL,previous_status TEXT,new_status TEXT NOT NULL,account_type TEXT NOT NULL DEFAULT 'personal',department TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL)",
+  "CREATE TABLE IF NOT EXISTS send_delegations (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER NOT NULL,grantee_user_id INTEGER NOT NULL,allowed_address TEXT NOT NULL COLLATE NOCASE,permission_mode TEXT NOT NULL DEFAULT 'send_as',purpose TEXT,expires_at TEXT,is_active INTEGER NOT NULL DEFAULT 1,created_by INTEGER,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,revoked_at TEXT,UNIQUE(grantee_user_id,allowed_address),FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE,FOREIGN KEY(grantee_user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL)",
+  "CREATE TABLE IF NOT EXISTS send_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT NOT NULL UNIQUE,user_id INTEGER NOT NULL,mailbox_id INTEGER NOT NULL,sender_address TEXT NOT NULL,recipients_json TEXT NOT NULL,cc_json TEXT NOT NULL DEFAULT '[]',bcc_json TEXT NOT NULL DEFAULT '[]',subject TEXT,text_body TEXT,html_body TEXT,reply_to TEXT,in_reply_to TEXT,priority TEXT NOT NULL DEFAULT 'normal',email_category TEXT NOT NULL DEFAULT 'personal',storage_key TEXT,status TEXT NOT NULL DEFAULT 'queued',risk_score INTEGER NOT NULL DEFAULT 0,risk_flags_json TEXT NOT NULL DEFAULT '[]',retry_count INTEGER NOT NULL DEFAULT 0,max_retries INTEGER NOT NULL DEFAULT 3,deliver_after TEXT,next_attempt_at TEXT,last_error TEXT,provider_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS message_recalls (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL,operation_id TEXT,requester_user_id INTEGER NOT NULL,sender_address TEXT NOT NULL,reason TEXT,overall_status TEXT NOT NULL,total_recipients INTEGER NOT NULL DEFAULT 0,recalled_count INTEGER NOT NULL DEFAULT 0,external_count INTEGER NOT NULL DEFAULT 0,already_read_count INTEGER NOT NULL DEFAULT 0,details_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,FOREIGN KEY(requester_user_id) REFERENCES users(id) ON DELETE CASCADE)",
+  "CREATE TABLE IF NOT EXISTS suppression_list (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE COLLATE NOCASE,reason TEXT NOT NULL DEFAULT 'manual_block',source TEXT,notes TEXT,created_by INTEGER,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL)",
+  "CREATE TABLE IF NOT EXISTS security_alerts (id INTEGER PRIMARY KEY AUTOINCREMENT,severity TEXT NOT NULL DEFAULT 'medium',category TEXT NOT NULL,title TEXT NOT NULL,detail_json TEXT,user_id INTEGER,is_resolved INTEGER NOT NULL DEFAULT 0,resolved_by INTEGER,resolved_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,FOREIGN KEY(resolved_by) REFERENCES users(id) ON DELETE SET NULL)",
+  "CREATE INDEX IF NOT EXISTS idx_messages_mailbox_folder ON messages(mailbox_id,folder,created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id_header)",
+  "CREATE INDEX IF NOT EXISTS idx_login_history_user_created ON login_history(user_id,created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id,display_name)",
+  "CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,is_read,created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_compose_drafts_user ON compose_drafts(user_id,updated_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_rules_user ON mail_rules(user_id,is_active)",
+  "CREATE INDEX IF NOT EXISTS idx_labels_user ON labels(user_id,name)",
+  "CREATE INDEX IF NOT EXISTS idx_mail_templates_user ON mail_templates(user_id,updated_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_delivery_events_message ON delivery_events(message_id,created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_verification_history_user ON verification_history(user_id,created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_send_delegations_grantee ON send_delegations(grantee_user_id,is_active)",
+  "CREATE INDEX IF NOT EXISTS idx_send_queue_status ON send_queue(status,deliver_after)",
+  "CREATE INDEX IF NOT EXISTS idx_message_recalls_message ON message_recalls(message_id,created_at DESC)",
+  "CREATE INDEX IF NOT EXISTS idx_suppression_email ON suppression_list(email)",
+  "INSERT OR IGNORE INTO settings(key,value_json) VALUES ('setup_completed','false'),('mail_domain','\"skyfirst.io.vn\"'),('official_domain','\"mail.skyfirst.io.vn\"'),('app_name','\"Sky First Mail\"')",
+  "INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('skyfirst.io.vn','configured',1,0)",
+  "INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('nhahanngu.io.vn','configured',1,0)"
+];
 const safeRole=v=>ROLES.includes(v)?v:'user';
 const parseJson=(v,fallback=[])=>{try{return JSON.parse(v??'')}catch{return fallback}};
 function constantTimeEqual(a,b){
@@ -43,7 +89,16 @@ async function ensureColumns(env,table,columns){
   const r=await env.DB.prepare(`PRAGMA table_info(${table})`).all();
   const existing=new Set((r.results||[]).map(x=>x.name));
   const missing=columns.filter(([name])=>!existing.has(name));
-  if(missing.length)await env.DB.exec(missing.map(([name,definition])=>`ALTER TABLE ${table} ADD COLUMN ${name} ${definition};`).join('\n'));
+  if(!missing.length)return;
+  // Execute ALTER TABLE via prepared statements rather than multi-line DB.exec()
+  // so Cloudflare D1 production never fails with D1_EXEC_ERROR on multi-line scripts.
+  for(const [name,definition] of missing){
+    try{
+      await env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`).run();
+    }catch(e){
+      if(!/duplicate column/i.test(String(e?.message||e)))throw e;
+    }
+  }
 }
 async function ensureSchema(env){
   if(schemaReady)return;
@@ -52,69 +107,24 @@ async function ensureSchema(env){
   // initialization promise so they do not race PRAGMA/ALTER TABLE operations.
   schemaPromise=(async()=>{
    try{
-    // D1 is shared across Worker isolates, while schemaReady is isolate-local.
-    // A durable version marker lets a cold isolate skip the expensive compatibility
-    // DDL/PRAGMA path after the schema has been prepared once.
     try{
       const marker=await env.DB.prepare(`SELECT value_json FROM settings WHERE key='runtime_schema_version' LIMIT 1`).first();
       if(marker?.value_json===JSON.stringify(SCHEMA_BOOTSTRAP_VERSION)){schemaReady=true;return;}
     }catch{}
-    await env.DB.exec(`
-    PRAGMA foreign_keys = ON;
-    CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE COLLATE NOCASE,display_name TEXT NOT NULL,password_salt TEXT NOT NULL,password_hash TEXT NOT NULL,password_iterations INTEGER NOT NULL DEFAULT 100000,role TEXT NOT NULL DEFAULT 'user',status TEXT NOT NULL DEFAULT 'active',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS mailboxes (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,address TEXT NOT NULL UNIQUE COLLATE NOCASE,display_name TEXT,is_primary INTEGER NOT NULL DEFAULT 1,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER,direction TEXT NOT NULL CHECK(direction IN ('inbound','outbound')),folder TEXT NOT NULL DEFAULT 'inbox',message_id_header TEXT,thread_key TEXT,sender TEXT NOT NULL,recipients_json TEXT NOT NULL,cc_json TEXT,bcc_json TEXT,subject TEXT,preview TEXT,storage_key TEXT NOT NULL,raw_size INTEGER NOT NULL DEFAULT 0,is_read INTEGER NOT NULL DEFAULT 0,is_starred INTEGER NOT NULL DEFAULT 0,is_important INTEGER NOT NULL DEFAULT 0,snoozed_until TEXT,content_sha256 TEXT,hash_recorded_at TEXT,status TEXT NOT NULL DEFAULT 'received',sent_at TEXT,received_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE SET NULL);
-    CREATE TABLE IF NOT EXISTS attachments (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL,filename TEXT NOT NULL,content_type TEXT,size INTEGER NOT NULL DEFAULT 0,storage_key TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS sessions (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,token_hash TEXT NOT NULL UNIQUE,expires_at TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY,value_json TEXT NOT NULL,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER,action TEXT NOT NULL,target_type TEXT,target_id TEXT,metadata_json TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL);
-    CREATE TABLE IF NOT EXISTS login_history (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,ip TEXT,user_agent TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS aliases (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER NOT NULL,address TEXT NOT NULL UNIQUE COLLATE NOCASE,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS user_preferences (user_id INTEGER PRIMARY KEY,theme TEXT NOT NULL DEFAULT 'system',density TEXT NOT NULL DEFAULT 'comfortable',reading_pane TEXT NOT NULL DEFAULT 'right',undo_send_seconds INTEGER NOT NULL DEFAULT 10,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS contacts (id INTEGER PRIMARY KEY AUTOINCREMENT,owner_user_id INTEGER NOT NULL,email TEXT NOT NULL COLLATE NOCASE,display_name TEXT,notes TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(owner_user_id,email),FOREIGN KEY(owner_user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS signatures (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER,name TEXT NOT NULL,content_html TEXT NOT NULL DEFAULT '',is_default INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS labels (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id,name),FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS message_labels (message_id INTEGER NOT NULL,label_id INTEGER NOT NULL,PRIMARY KEY(message_id,label_id),FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,FOREIGN KEY(label_id) REFERENCES labels(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS mail_rules (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER,name TEXT NOT NULL,sender_contains TEXT,subject_contains TEXT,action_folder TEXT,action_star INTEGER NOT NULL DEFAULT 0,is_active INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS notifications (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,type TEXT NOT NULL DEFAULT 'system',title TEXT NOT NULL,body TEXT,is_read INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS compose_drafts (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,mailbox_id INTEGER NOT NULL,to_json TEXT NOT NULL DEFAULT '[]',cc_json TEXT NOT NULL DEFAULT '[]',subject TEXT,body_text TEXT,storage_key TEXT,attachment_names_json TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS managed_domains (id INTEGER PRIMARY KEY AUTOINCREMENT,domain TEXT NOT NULL UNIQUE COLLATE NOCASE,status TEXT NOT NULL DEFAULT 'configured',receive_enabled INTEGER NOT NULL DEFAULT 1,send_enabled INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
-    CREATE TABLE IF NOT EXISTS mail_templates (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,name TEXT NOT NULL,subject TEXT NOT NULL DEFAULT '',body_html TEXT NOT NULL DEFAULT '',body_text TEXT NOT NULL DEFAULT '',category TEXT NOT NULL DEFAULT 'personal',created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS delivery_events (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER,provider TEXT NOT NULL DEFAULT 'resend',provider_message_id TEXT,event_type TEXT NOT NULL,detail_json TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS verification_history (id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,actor_user_id INTEGER,action TEXT NOT NULL,previous_status TEXT,new_status TEXT NOT NULL,account_type TEXT NOT NULL DEFAULT 'personal',department TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(actor_user_id) REFERENCES users(id) ON DELETE SET NULL);
-    CREATE TABLE IF NOT EXISTS send_delegations (id INTEGER PRIMARY KEY AUTOINCREMENT,mailbox_id INTEGER NOT NULL,grantee_user_id INTEGER NOT NULL,allowed_address TEXT NOT NULL COLLATE NOCASE,permission_mode TEXT NOT NULL DEFAULT 'send_as',purpose TEXT,expires_at TEXT,is_active INTEGER NOT NULL DEFAULT 1,created_by INTEGER,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,revoked_at TEXT,UNIQUE(grantee_user_id,allowed_address),FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE,FOREIGN KEY(grantee_user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL);
-    CREATE TABLE IF NOT EXISTS send_queue (id INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT NOT NULL UNIQUE,user_id INTEGER NOT NULL,mailbox_id INTEGER NOT NULL,sender_address TEXT NOT NULL,recipients_json TEXT NOT NULL,cc_json TEXT NOT NULL DEFAULT '[]',bcc_json TEXT NOT NULL DEFAULT '[]',subject TEXT,text_body TEXT,html_body TEXT,reply_to TEXT,in_reply_to TEXT,priority TEXT NOT NULL DEFAULT 'normal',email_category TEXT NOT NULL DEFAULT 'personal',storage_key TEXT,status TEXT NOT NULL DEFAULT 'queued',risk_score INTEGER NOT NULL DEFAULT 0,risk_flags_json TEXT NOT NULL DEFAULT '[]',retry_count INTEGER NOT NULL DEFAULT 0,max_retries INTEGER NOT NULL DEFAULT 3,deliver_after TEXT,next_attempt_at TEXT,last_error TEXT,provider_id TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,FOREIGN KEY(mailbox_id) REFERENCES mailboxes(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS message_recalls (id INTEGER PRIMARY KEY AUTOINCREMENT,message_id INTEGER NOT NULL,operation_id TEXT,requester_user_id INTEGER NOT NULL,sender_address TEXT NOT NULL,reason TEXT,overall_status TEXT NOT NULL,total_recipients INTEGER NOT NULL DEFAULT 0,recalled_count INTEGER NOT NULL DEFAULT 0,external_count INTEGER NOT NULL DEFAULT 0,already_read_count INTEGER NOT NULL DEFAULT 0,details_json TEXT NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE,FOREIGN KEY(requester_user_id) REFERENCES users(id) ON DELETE CASCADE);
-    CREATE TABLE IF NOT EXISTS suppression_list (id INTEGER PRIMARY KEY AUTOINCREMENT,email TEXT NOT NULL UNIQUE COLLATE NOCASE,reason TEXT NOT NULL DEFAULT 'manual_block',source TEXT,notes TEXT,created_by INTEGER,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL);
-    CREATE TABLE IF NOT EXISTS security_alerts (id INTEGER PRIMARY KEY AUTOINCREMENT,severity TEXT NOT NULL DEFAULT 'medium',category TEXT NOT NULL,title TEXT NOT NULL,detail_json TEXT,user_id INTEGER,is_resolved INTEGER NOT NULL DEFAULT 0,resolved_by INTEGER,resolved_at TEXT,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,FOREIGN KEY(resolved_by) REFERENCES users(id) ON DELETE SET NULL);
-    CREATE INDEX IF NOT EXISTS idx_messages_mailbox_folder ON messages(mailbox_id,folder,created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_messages_message_id ON messages(message_id_header);
-    CREATE INDEX IF NOT EXISTS idx_login_history_user_created ON login_history(user_id,created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_contacts_owner ON contacts(owner_user_id,display_name);
-    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,is_read,created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_compose_drafts_user ON compose_drafts(user_id,updated_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_rules_user ON mail_rules(user_id,is_active);
-    CREATE INDEX IF NOT EXISTS idx_labels_user ON labels(user_id,name);
-    CREATE INDEX IF NOT EXISTS idx_mail_templates_user ON mail_templates(user_id,updated_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_delivery_events_message ON delivery_events(message_id,created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_verification_history_user ON verification_history(user_id,created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_send_delegations_grantee ON send_delegations(grantee_user_id,is_active);
-    CREATE INDEX IF NOT EXISTS idx_send_queue_status ON send_queue(status,deliver_after);
-    CREATE INDEX IF NOT EXISTS idx_message_recalls_message ON message_recalls(message_id,created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_suppression_email ON suppression_list(email);
-    INSERT OR IGNORE INTO settings(key,value_json) VALUES ('setup_completed','false'),('mail_domain','"skyfirst.io.vn"'),('official_domain','"mail.skyfirst.io.vn"'),('app_name','"Sky First Mail"');
-    INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('skyfirst.io.vn','configured',1,0);
-    INSERT OR IGNORE INTO managed_domains(domain,status,receive_enabled,send_enabled) VALUES('nhahanngu.io.vn','configured',1,0);
-  `);
-  if(typeof env.DB.batch==='function')await env.DB.batch(RELIABILITY_STATEMENTS.map(statement=>env.DB.prepare(statement)));
-  else for(const statement of RELIABILITY_STATEMENTS)await env.DB.prepare(statement).run();
-  for(const [table,columns] of [
-    ['users',[['avatar_key','TEXT'],['allow_name_change','INTEGER NOT NULL DEFAULT 1'],['allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['allow_password_change','INTEGER NOT NULL DEFAULT 1'],['last_login_at','TEXT'],['cover_key','TEXT'],['profile_status',"TEXT NOT NULL DEFAULT 'available'"],['allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['allow_theme_change','INTEGER NOT NULL DEFAULT 1'],['is_verified','INTEGER NOT NULL DEFAULT 0'],['verification_status',"TEXT NOT NULL DEFAULT 'unverified'"],['account_type',"TEXT NOT NULL DEFAULT 'personal'"],['department','TEXT'],['verified_at','TEXT'],['verified_by','INTEGER'],['verification_reason','TEXT'],['expires_at','TEXT'],['quota_bytes','INTEGER NOT NULL DEFAULT 1073741824'],['daily_send_limit','INTEGER NOT NULL DEFAULT 200'],['hourly_send_limit','INTEGER NOT NULL DEFAULT 50'],['mfa_enabled','INTEGER NOT NULL DEFAULT 0'],['mfa_secret','TEXT']]],
-    ['sessions',[['ip','TEXT'],['user_agent','TEXT'],['last_seen_at','TEXT']]],
-    ['messages',[['bcc_json','TEXT'],['is_important','INTEGER NOT NULL DEFAULT 0'],['snoozed_until','TEXT'],['content_sha256','TEXT'],['hash_recorded_at','TEXT'],['recalled_at','TEXT'],['recall_reason','TEXT'],['email_category',"TEXT NOT NULL DEFAULT 'personal'"],['risk_score','INTEGER NOT NULL DEFAULT 0'],['inbound_auth_json','TEXT'],['actor_user_id','INTEGER']]],
-    ['compose_drafts',[['bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['body_html','TEXT'],['sender_address','TEXT'],['reply_to_message_id','INTEGER']]],
-    ['managed_domains',[['transport',"TEXT NOT NULL DEFAULT 'resend'"],['verification_token','TEXT'],['verified_at','TEXT'],['last_checked_at','TEXT'],['health_json','TEXT'],['inbound_adapter',"TEXT NOT NULL DEFAULT 'cloudflare_email_routing'"],['dkim_selector',"TEXT NOT NULL DEFAULT 'resend'"],['bimi_logo_url',"TEXT DEFAULT 'https://mail.skyfirst.io.vn/bimi-logo.svg'"],['bimi_vmc_url','TEXT'],['external_verification_status',"TEXT NOT NULL DEFAULT 'unchecked'"],['daily_send_limit','INTEGER NOT NULL DEFAULT 2000']]]
-  ])await ensureColumns(env,table,columns);
+    const allBootstrapStatements=[...BASE_SCHEMA_STATEMENTS,...RELIABILITY_STATEMENTS];
+    if(typeof env.DB.batch==='function'){
+      await env.DB.batch(allBootstrapStatements.map(statement=>env.DB.prepare(statement)));
+    }else{
+      for(const statement of allBootstrapStatements)await env.DB.prepare(statement).run();
+    }
+    for(const [table,columns] of [
+      ['users',[['avatar_key','TEXT'],['allow_name_change','INTEGER NOT NULL DEFAULT 1'],['allow_avatar_change','INTEGER NOT NULL DEFAULT 1'],['allow_password_change','INTEGER NOT NULL DEFAULT 1'],['last_login_at','TEXT'],['cover_key','TEXT'],['profile_status',"TEXT NOT NULL DEFAULT 'available'"],['allow_signature_change','INTEGER NOT NULL DEFAULT 1'],['allow_theme_change','INTEGER NOT NULL DEFAULT 1'],['is_verified','INTEGER NOT NULL DEFAULT 0'],['verification_status',"TEXT NOT NULL DEFAULT 'unverified'"],['account_type',"TEXT NOT NULL DEFAULT 'personal'"],['department','TEXT'],['verified_at','TEXT'],['verified_by','INTEGER'],['verification_reason','TEXT'],['expires_at','TEXT'],['quota_bytes','INTEGER NOT NULL DEFAULT 1073741824'],['daily_send_limit','INTEGER NOT NULL DEFAULT 200'],['hourly_send_limit','INTEGER NOT NULL DEFAULT 50'],['mfa_enabled','INTEGER NOT NULL DEFAULT 0'],['mfa_secret','TEXT']]],
+      ['sessions',[['ip','TEXT'],['user_agent','TEXT'],['last_seen_at','TEXT']]],
+      ['messages',[['bcc_json','TEXT'],['is_important','INTEGER NOT NULL DEFAULT 0'],['snoozed_until','TEXT'],['content_sha256','TEXT'],['hash_recorded_at','TEXT'],['recalled_at','TEXT'],['recall_reason','TEXT'],['email_category',"TEXT NOT NULL DEFAULT 'personal'"],['risk_score','INTEGER NOT NULL DEFAULT 0'],['inbound_auth_json','TEXT'],['actor_user_id','INTEGER']]],
+      ['compose_drafts',[['bcc_json',"TEXT NOT NULL DEFAULT '[]'"],['body_html','TEXT'],['sender_address','TEXT'],['reply_to_message_id','INTEGER']]],
+      ['managed_domains',[['transport',"TEXT NOT NULL DEFAULT 'resend'"],['verification_token','TEXT'],['verified_at','TEXT'],['last_checked_at','TEXT'],['health_json','TEXT'],['inbound_adapter',"TEXT NOT NULL DEFAULT 'cloudflare_email_routing'"],['dkim_selector',"TEXT NOT NULL DEFAULT 'resend'"],['bimi_logo_url',"TEXT DEFAULT 'https://mail.skyfirst.io.vn/bimi-logo.svg'"],['bimi_vmc_url','TEXT'],['external_verification_status',"TEXT NOT NULL DEFAULT 'unchecked'"],['daily_send_limit','INTEGER NOT NULL DEFAULT 2000']]],
+      ['user_preferences',[['undo_send_seconds','INTEGER NOT NULL DEFAULT 10']]]
+    ])await ensureColumns(env,table,columns);
     // Domain send state is explicit; never auto-enable every domain because one provider secret exists.
     await env.DB.prepare(`INSERT INTO settings(key,value_json,updated_at) VALUES('runtime_schema_version',?,CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,updated_at=CURRENT_TIMESTAMP`).bind(JSON.stringify(SCHEMA_BOOTSTRAP_VERSION)).run();
     schemaReady=true;
@@ -610,7 +620,7 @@ async function routeApi(request,env){
     const b=await bodyJson(request),status=['available','busy','away','offline'].includes(b.status)?b.status:'available';await env.DB.prepare(`UPDATE users SET profile_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(status,user.id).run();return json({ok:true})
   }
   if(path==='/api/profile/password'&&request.method==='PATCH'){
-    if(!user.allow_password_change&&!isAdmin(user))return forbidden('Mật khẩu được quản lý bởi quản trị viên.');const b=await bodyJson(request),cur=String(b.currentPassword||''),next=String(b.newPassword||'');if(next.length<10||next.length>1024)return badRequest('Mật khẩu mới phải từ 10 đến 1.024 ký tự.');if(!(await verifyPassword(cur,user.password_salt,user.password_hash,user.password_iterations)))return badRequest('Mật khẩu hiện tại không đúng.');const hp=await hashPassword(next);await env.DB.prepare(`UPDATE users SET password_salt=?,password_hash=?,password_iterations=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(hp.salt,hp.hash,hp.iterations,user.id).run();await env.DB.prepare(`DELETE FROM sessions WHERE user_id=? AND id<>?`).bind(user.id,user.session_id||0).run();await notify(env,user.id,'Mật khẩu đã được thay đổi','Các phiên đăng nhập khác đã bị đăng xuất.','security');await audit(env,user.id,'security.password.changed','user',user.id);return json({ok:true})
+    if(!user.allow_password_change&&!isAdmin(user))return forbidden('Mật khẩu được quản trị viên quản lý.');const b=await bodyJson(request),cur=String(b.currentPassword||''),next=String(b.newPassword||'');if(next.length<10||next.length>1024)return badRequest('Mật khẩu mới phải từ 10 đến 1.024 ký tự.');if(!(await verifyPassword(cur,user.password_salt,user.password_hash,user.password_iterations)))return badRequest('Mật khẩu hiện tại không đúng.');const hp=await hashPassword(next);await env.DB.prepare(`UPDATE users SET password_salt=?,password_hash=?,password_iterations=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).bind(hp.salt,hp.hash,hp.iterations,user.id).run();await env.DB.prepare(`DELETE FROM sessions WHERE user_id=? AND id<>?`).bind(user.id,user.session_id||0).run();await notify(env,user.id,'Mật khẩu đã được thay đổi','Các phiên đăng nhập khác đã bị đăng xuất.','security');await audit(env,user.id,'security.password.changed','user',user.id);return json({ok:true})
   }
   if(path==='/api/profile/avatar'&&request.method==='POST'){
     if(!user.allow_avatar_change&&!isAdmin(user))return forbidden('Ảnh đại diện do quản trị viên quản lý.');
@@ -1198,7 +1208,6 @@ async function routeApi(request,env){
       const depMb=await env.DB.prepare(`SELECT count(*) n FROM mailboxes WHERE lower(address) LIKE lower(?)`).bind(suffix).first();
       const depAl=await env.DB.prepare(`SELECT count(*) n FROM aliases WHERE lower(address) LIKE lower(?)`).bind(suffix).first();
       if((Number(depMb?.n||0)+Number(depAl?.n||0))>0){
-        // Never delete accounts, emails, or history when a domain has dependents; disable instead or require safe detachment.
         await env.DB.prepare(`UPDATE managed_domains SET status='disabled',receive_enabled=0,send_enabled=0 WHERE id=?`).bind(id).run();
         await audit(env,user.id,'admin.domain.disabled_with_dependents','domain',id,{domain:existing.domain,mailboxes:depMb?.n,aliases:depAl?.n});
         return json({ok:true,removed:false,disabledOnly:true,message:`Tên miền ${existing.domain} đang có ${depMb?.n||0} hộp thư và ${depAl?.n||0} bí danh phụ thuộc. Để bảo toàn tài khoản và lịch sử email, hệ thống chỉ tạm ngừng gửi/nhận trên tên miền này thay vì xóa dữ liệu.`});
@@ -1336,7 +1345,6 @@ async function handleInboundEmail(message, env, ctx) {
   let storageKey = null;
   try {
     await ensureSchema(env);
-    // Check manual block in suppression list for inbound senders
     const blockedSender = await env.DB.prepare(`SELECT reason FROM suppression_list WHERE lower(email)=lower(?) AND reason='manual_block' LIMIT 1`).bind(senderAddress).first().catch(() => null);
     if (blockedSender) { message.setReject('Sender is blocked by Sky First Mail policy.'); return; }
 
@@ -1412,6 +1420,13 @@ export default {
           }
         }
         await ensureSchema(env);const response=await routeApi(request,env);const h=new Headers(response.headers);h.set('x-content-type-options','nosniff');h.set('referrer-policy','no-referrer');h.set('x-frame-options','DENY');h.set('permissions-policy','camera=(), microphone=(), geolocation=()');h.set('cache-control','no-store');return new Response(response.body,{status:response.status,statusText:response.statusText,headers:h});
+      }
+      // Graceful compatibility for browsers holding a pre-V13 cached HTML shell before Service Worker refresh:
+      if(['/ui-dialogs.js','/v3.js','/v4.js','/v7.js'].includes(url.pathname)){
+        return new Response('/* Consolidated into app.js */',{status:200,headers:{'content-type':'application/javascript; charset=utf-8','cache-control':'no-store'}});
+      }
+      if(url.pathname==='/stability.css'){
+        return new Response('/* Consolidated into styles.css */',{status:200,headers:{'content-type':'text/css; charset=utf-8','cache-control':'no-store'}});
       }
       return env.ASSETS.fetch(request)
     }catch(e){

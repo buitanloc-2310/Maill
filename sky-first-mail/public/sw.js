@@ -1,5 +1,5 @@
 /* Sky First Mail service worker. Email/API responses are deliberately never cached. */
-const CACHE_NAME = 'sky-first-mail-static-v3-startupfix';
+const CACHE_NAME = 'sky-first-mail-static-v13.0.1';
 const STATIC_ASSETS = [
   '/styles.css', '/app.js', '/v5.js',
   '/favicon-app.png', '/sky-first-logo.png', '/bimi-logo.svg', '/manifest.webmanifest',
