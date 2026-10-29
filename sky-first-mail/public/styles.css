@@ -447,3 +447,9 @@ html[data-sidebar="collapsed"] .workspace>aside .aside-sep{width:40px;margin:8px
   .admin-workspace .delegation-row button,
   .admin-workspace .alias-row button{flex:1 1 auto;text-align:center}
 }
+
+/* Master UI Fixes — Non-shrinking Action Buttons & Matrix Alignment */
+.domain-mgmt-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.domain-mgmt-actions button{white-space:nowrap!important;flex:0 0 auto!important;min-width:105px!important;padding:9px 15px!important}
+.bimi-matrix{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin:12px 0}
+.admin-workspace .account-row.report-row{grid-template-columns:minmax(220px,1fr) auto;gap:16px;padding:16px}

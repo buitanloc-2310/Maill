@@ -192,16 +192,40 @@ test('mail API and persisted delivery',async t=>{
   const pubHtml=await app.fetch(new Request('https://mail.skyfirst.io.vn/verified?address=admin@skyfirst.io.vn'),env,{waitUntil:()=>null});
   assert.equal(pubHtml.status,200);
   const htmlText=await pubHtml.text();
-  assert.match(htmlText,/HỆ THỐNG XÁC MINH DANH TÍNH & NHẬN DIỆN THƯƠNG HIỆU - Sky First Verified/);
-  assert.match(htmlText,/Đã xác minh chính thức/);
+  assert.match(htmlText,/HỆ THỐNG XÁC MINH DANH TÍNH & NHẬN DIỆN THƯƠNG HIỆU/);
+  assert.match(htmlText,/Sky First Verified/);
+  assert.match(htmlText,/Đã xác minh thuộc hệ thống Sky First/);
   assert.match(htmlText,/Trung tâm Thư điện tử Sky First/);
   assert.match(htmlText,/Minh bạch xác minh danh tính/);
   assert.match(htmlText,/An toàn và bảo vệ thương hiệu/);
   assert.match(htmlText,/Toàn vẹn dữ liệu email/);
   assert.match(htmlText,/Xác thực và bảo mật hệ thống/);
-  assert.match(htmlText,/Tôi chưa thấy tích xanh/);
   assert.match(htmlText,/support@skyfirst\.io\.vn/);
   assert.match(htmlText,/lienhe@skyfirst\.io\.vn/);
+
+  // Test external email security warning
+  const warnHtml=await app.fetch(new Request('https://mail.skyfirst.io.vn/verified?address=scammer@external-fake.test'),env,{waitUntil:()=>null});
+  assert.equal(warnHtml.status,200);
+  const warnText=await warnHtml.text();
+  assert.match(warnText,/CẢNH BÁO AN NINH THƯƠNG HIỆU SKY FIRST/);
+  assert.match(warnText,/KHÔNG CÓ CƠ SỞ XÁC NHẬN DANH TÍNH SKY FIRST/);
+  assert.equal(warnText.includes('Thông tin Hồ sơ Xác minh (6 Trường Dữ liệu)'),false);
+
+  // Test brand security report submission & admin handling
+  const rptRes=await request('/api/public/brand-reports','POST',{
+    reportedEmail:'scammer@external-fake.test',
+    reportType:'Email lừa đảo',
+    description:'Mạo danh Sky First yêu cầu chuyển tiền',
+    reporterEmail:'reader@skyfirst.io.vn',
+    reporterName:'Người tố cáo A'
+  });
+  assert.equal(rptRes.r.status,200);
+  assert.equal(rptRes.data.ok,true);
+  assert.match(rptRes.data.receiptCode,/^TC-2026-/);
+
+  const adminRpt=await request('/api/admin/brand-reports');
+  assert.equal(adminRpt.r.status,200);
+  assert.ok(adminRpt.data.reports.some(x=>x.reportedEmail==='scammer@external-fake.test'));
  });
 
  await t.test('User deletion by ID and email, subdomain creation and domain lifecycle',async()=>{
